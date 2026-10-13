@@ -84,3 +84,33 @@ After fork #2 merges with user approval, retarget #3 to `dev`, verify that its
 diff contains only the remaining work, and rerun relevant checks before merging.
 Upstream submission requires separate authorization. Neither fork PR has been
 merged as part of establishing this workflow.
+
+## Actisense NMEA 2000 reception and recording
+
+- Status: **candidate**, local implementation on `feature/nmea2000-actisense`.
+- Fork review: not opened; no publication or merge requested.
+- Functional commits: currently uncommitted in `/private/tmp/gwr-nmea2000`.
+- Dependencies: synchronized with `feature/tides-currents-plan` at `654a485`
+  at the user's request, including the latest wind, marine and macOS trackpad
+  changes; uses existing pyserial/pynmea2.
+- Scope: transport-independent NMEA 2000 PGN messages and instrument conversion;
+  receive-only Actisense BST and N2K ASCII over serial/TCP/UDP; raw CANboat-format
+  session archives; and a macOS/Linux pseudo-terminal simulator. NGT-1 and NGX-1
+  hardware compatibility still requires onboard checks. SocketCAN and Yacht
+  Devices RAW remain possible future adapters.
+- Validation on the pre-sync snapshot: 470 tests and 38 subtests pass; after
+  syncing with current development, 687 tests and 54 subtests pass. New serial
+  integration exercises
+  independent mock wire encoding, actual pseudo-terminal I/O, instruments,
+  track conversion and recording. Native GTK settings selection/restoration,
+  Black, Flake8 and scoped mypy pass. No onboard NGT-1 test or Polarize import
+  validation yet.
+- Multi-format follow-up validation: 60 focused NMEA 2000 tests pass, including
+  Actisense BST and N2K ASCII over serial/network, plus the GTK settings smoke
+  test. Black, Flake8, scoped mypy and diff checks pass. The full suite was
+  attempted but the sandbox aborted while importing native GDK in chart tests;
+  it did not report a test assertion failure.
+- Intended upstream scope: reusable receiver/conversions and settings first;
+  recording and simulator can follow as focused dependent contributions. Exclude
+  fork policy/tracking from submission. Source selection and polar fitting are
+  separate work.
