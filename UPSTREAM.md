@@ -1802,3 +1802,54 @@ into `dev`; no upstream PR was created or updated.
 - Fork merge/retarget prerequisites in the preceding feature entries are now
   fulfilled. Their upstream candidate/queued statuses remain unchanged; no
   upstream publication or merge was performed or authorized by this integration.
+
+## Crisp live wind barbs — 2026-10-15
+
+- Status: candidate; fork review [#34](https://github.com/evanlivingston/gweatherrouting/pull/34),
+  approved by the user for merging together with all existing local weather
+  changes. Local implementation `3618dcc` starts from `dev` at `60f4814`;
+  review adaptation `b3c686a` initially targeted the published `dev` before
+  incorporating the complete local branch at the user's request.
+- Scope: keep wind barbs outside the cached raster in GTK and Qt; draw
+  fixed-size vector symbols at current map positions throughout zoom/pan.
+  Reuse completed weather samples, filter land on the background worker,
+  batch strokes/fills by color, and cache geometry for stationary repaints.
+- Display selection: the saved `gribBarbDensity` preference offers Sparse,
+  Standard, Dense, Very dense, and All forecast points in Qt's Weather panel
+  and GTK's weather settings. Standard retains 44-logical-pixel screen cells
+  and a 900-symbol budget. Other thinned presets use 64/28/16-pixel cells
+  with symbol budgets scaled by cell area; All forecast points bypasses
+  thinning and the count budget. Selection is spread across the viewport.
+  Changes rebuild only foreground geometry, reusing completed weather data.
+  This changes displayed symbol density, not forecast interpolation, source
+  precedence, routing calculations, fill, or pressure contours. Calm symbols,
+  wind directions, colors, and meteorological feather/pennant values are kept.
+- Performance: synthetic 10,000-sample, 1280-by-800 Cairo benchmark, 15 timed
+  redraws after warmup, land symbols enabled: old per-symbol drawing median
+  105.755 ms versus culled/thinned/batched live drawing 8.249 ms (620 symbols,
+  about 13x faster). This includes projection/selection for live drawing;
+  old projection was precomputed. It measures glyph drawing, not application
+  frame rate, GRIB loading, or cached-image blitting.
+- Validation: full suite passes 936 tests and 114 subtests. Standalone Qt
+  suite passed 115 tests and 23 subtests before the final calm-symbol/cache
+  follow-ups; final Qt barb/zoom checks pass 6 tests and 2 subtests. New checks
+  cover fixed-size raster output through fractional zoom and Retina scaling,
+  native-grid thinning/view coverage, land-worker isolation, unchanged
+  projection/notation, and stationary geometry reuse. Black and diff checks
+  pass. Scoped Flake8 retains one existing resampling-complexity failure;
+  scoped mypy retains 10 errors in 5 files, reproduced on clean `dev`.
+- Density-control follow-up validation: 49 renderer/GTK settings tests and
+  3 focused Qt checks pass, covering monotonic density, uncapped All forecast
+  points, persistence, view refresh, and foreground-only invalidation without
+  forecast reload. Black and diff checks pass; scoped Flake8 retains the same
+  resampling-complexity failure. Expanded scoped mypy reports the existing 32
+  errors in 8 files, including GTK settings dependencies.
+- Dependencies/upstream scope: shared background wind renderer and forecast
+  sampling already integrated in `dev`; Qt foreground integration depends on
+  the Qt frontend. Extract the shared/GTK renderer and focused Qt integration
+  separately when their upstream prerequisites are available.
+- PR #34 includes the existing local weather stack: shared sampling
+  (`a29763f`), mixed-model fills/isobars (`bcc4047`), weather dock (`83e8612`),
+  and their tracking/integration commits. Its initial focused review branch
+  independently passed 932 tests and 114 subtests, Black, Flake8, and diff
+  checks before the user requested including this full stack.
