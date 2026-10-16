@@ -63,6 +63,35 @@ def pressure_columns():
     ]
 
 
+def make_res_grib(path, origin_lon, origin_lat, step, width, height):
+    """Overlapping GRIB on a different grid spacing (e.g. GFS vs HRRR)."""
+    bands = [(0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)]
+    pressure = np.fromfunction(
+        lambda y, x: 101300 + x * 200 * step + y * 100 * step,
+        (height, width),
+        dtype=np.float32,
+    )
+    bands += [(0, "PRMSL", pressure), (3, "PRMSL", pressure + 300)]
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        path, width, height, len(bands), gdal.GDT_Float32
+    )
+    dataset.SetGeoTransform((origin_lon, step, 0, origin_lat, 0, -step))
+    for index, (hour, element, value) in enumerate(bands, 1):
+        band = dataset.GetRasterBand(index)
+        band.SetMetadata(
+            {"GRIB_ELEMENT": element, "GRIB_FORECAST_SECONDS": str(hour * 3600)}
+        )
+        array = (
+            value
+            if isinstance(value, np.ndarray)
+            else np.full((height, width), value, dtype=np.float32)
+        )
+        band.WriteArray(array)
+    band = None
+    dataset = None
+    return Grib(path, "gfs", "test", [], datetime(2026, 1, 1), 3)
+
+
 class TestPressureData(unittest.TestCase):
     def setUp(self):
         temporary = TemporaryDirectory()
@@ -218,6 +247,134 @@ class TestIsobarPainting(unittest.TestCase):
             [(48.0 + row, -124.0 + col, 1013.0) for row in range(3)] for col in range(4)
         ]
         self.assertFalse(any(self.paint(flat)))
+
+
+class TestMixedGridIsobars(unittest.TestCase):
+    """Overlapping models on different grids must still contour.
+
+    Regression test: a 1-degree grid plus an overlapping 0.5-degree grid
+    (like GFS beside projected HRRR/HRDPS) never share a latitude vector,
+    so the native-node union forms no contour block on its own.
+    """
+
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.coarse = make_res_grib(
+            str(Path(temporary.name) / "coarse.grib2"), -124.5, 50.5, 1.0, 6, 5
+        )
+        # Same spacing, shifted half a cell: no column shares a latitude
+        # vector with the other grid, like GFS beside projected HRRR/HRDPS.
+        self.fine = make_res_grib(
+            str(Path(temporary.name) / "fine.grib2"), -124.0, 50.0, 1.0, 6, 5
+        )
+        self.renderer = WindOverlayRenderer(WindPainter)
+
+    def mixed_job(self, **viewport):
+        bounds = ((47.0, -124.0), (50.0, -120.0))
+        defaults = dict(
+            get_scale=lambda: 350.0,
+            render_cancelled=lambda: False,
+            get_bbox=lambda: (
+                SimpleNamespace(get_degrees=lambda: bounds[0]),
+                SimpleNamespace(get_degrees=lambda: bounds[1]),
+            ),
+            convert_geographic_to_screen_batch=lambda lats, lons: (
+                (np.asarray(lons) + 124) * 40 + 10,
+                (50 - np.asarray(lats)) * 40 + 10,
+            ),
+            width=300,
+            height=200,
+        )
+        defaults.update(viewport)
+        return SimpleNamespace(
+            viewport=SimpleNamespace(**defaults),
+            charts=((self.coarse,), (self.fine,)),
+            palette=(datetime(2026, 1, 1, 1), 0.4, False, True, False, 4.0, 0.85, True),
+            cancel=Event(),
+            factor=1,
+        )
+
+    def test_mixed_grids_form_contour_blocks(self):
+        columns = self.renderer._load_pressure(self.mixed_job())
+        self.assertTrue(columns)
+        self.assertTrue(WindPainter._pressure_blocks(columns))
+        values = [point[2] for column in columns for point in column]
+        self.assertTrue(1000 < min(values) < max(values) < 1050)
+
+    def test_mixed_grids_render_isobar_pixels_without_wind(self):
+        surface = self.renderer._render(self.mixed_job())
+        self.assertIsNotNone(surface)
+        surface.flush()
+        self.assertTrue(any(bytes(surface.get_data())))
+
+    def test_mixed_grids_keep_dense_native_barbs(self):
+        # Barbs draw from the dense native union, not the coarser fill grid.
+        columns = self.renderer._load_wind(self.mixed_job())
+        native = self.renderer._load_field(self.mixed_job(), "wind")
+        self.assertEqual(columns, native)
+        self.assertFalse(
+            WindOverlayRenderer._columns_share_lats(
+                columns, lambda point: point[2][0]
+            )
+        )
+
+    def test_mixed_grids_fill_from_one_regular_grid(self):
+        columns = self.renderer._resample_field(self.mixed_job(), "wind")
+        self.assertTrue(
+            WindOverlayRenderer._columns_share_lats(
+                columns, lambda point: point[2][0]
+            )
+        )
+        for column in columns:
+            for direction, speed, (lat, lon) in column:
+                self.assertTrue(0.0 <= direction < 360.0)
+                self.assertGreaterEqual(speed, 0.0)
+
+    def test_mixed_grids_pass_gridded_fill_to_painter(self):
+        from unittest.mock import Mock
+
+        painter = Mock()
+        renderer = WindOverlayRenderer(lambda *_: painter)
+        job = self.mixed_job()
+        job.palette = (
+            datetime(2026, 1, 1, 1),
+            0.4,
+            False,
+            True,
+            True,
+            4.0,
+            0.85,
+            True,
+        )
+        self.assertIsNotNone(renderer._render(job))
+        fill_data = painter.draw.call_args.kwargs["fill_data"]
+        self.assertTrue(
+            WindOverlayRenderer._columns_share_lats(
+                fill_data, lambda point: point[2][0]
+            )
+        )
+        # Native points still feed the barbs.
+        self.assertEqual(
+            painter.draw.call_args.args[2], renderer._load_wind(job)
+        )
+
+    def test_mixed_grids_render_wind_and_isobars_together(self):
+        job = self.mixed_job()
+        job.palette = (
+            datetime(2026, 1, 1, 1),
+            0.4,
+            False,
+            True,
+            True,
+            4.0,
+            0.85,
+            True,
+        )
+        surface = self.renderer._render(job)
+        self.assertIsNotNone(surface)
+        surface.flush()
+        self.assertTrue(any(bytes(surface.get_data())))
 
 
 if __name__ == "__main__":

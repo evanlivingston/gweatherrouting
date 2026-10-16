@@ -243,11 +243,143 @@ class WindOverlayRenderer(OverlayRenderer):
             for lon in sorted(columns)
         ]
 
+    @staticmethod
+    def _columns_share_lats(columns, key):
+        """Whether columns form one regular grid for fills and contours."""
+        if len(columns) < 2:
+            return False
+        first = None
+        for column in columns:
+            if len(column) < 2:
+                return False
+            latitudes = tuple(key(point) for point in column)
+            if first is None:
+                first = latitudes
+            elif latitudes != first:
+                return False
+        return True
+
+    def _gridded_sources(self, job):
+        return bool(job.charts) and all(
+            isinstance(source, Grib) for (source,) in job.charts
+        )
+
     def _load_wind(self, job):
         return self._load_field(job, "wind")
 
     def _load_pressure(self, job):
-        return self._load_field(job, "pressure")
+        columns = self._load_field(job, "pressure")
+        if (
+            columns
+            and not WindPainter._pressure_blocks(columns)
+            and self._gridded_sources(job)
+        ):
+            # Mixed model grids (e.g. 0.25-degree GFS plus projected HRRR or
+            # HRDPS) never share a latitude vector, so the native-node union
+            # forms no contourable block. Resample the same blended field
+            # onto one regular grid instead of drawing nothing.
+            resampled = self._resample_field(job, "pressure")
+            if resampled:
+                return resampled
+        return columns
+
+    def _resample_field(self, job, field):
+        """Sample a blended field on a regular grid covering the viewport."""
+        providers = []
+        try:
+            for (source,) in job.charts:
+                if job.cancel.is_set():
+                    return []
+                try:
+                    providers.append((source, self._worker_grib(source)))
+                except Exception as exc:
+                    logger.debug("Weather source unavailable: %s", exc)
+            sources = [provider for _, provider in providers]
+            if not sources or not all(isinstance(source, Grib) for source in sources):
+                return []
+            sampler = WeatherSampler(sources)
+            bounds = self._viewport_bounds(job)
+            south, north = sorted((bounds[0][0], bounds[1][0]))
+            west, east = bounds[0][1], bounds[1][1]
+            if east < west:
+                east += 360.0
+            span_lat = north - south
+            span_lon = east - west
+            if not (span_lat > 0 and span_lon > 0):
+                return []
+            ncols = min(240, max(2, int(round(span_lon / 0.1)) + 1))
+            nrows = min(240, max(2, int(round(span_lat / 0.1)) + 1))
+            total = ncols * nrows
+            if total > 30000:
+                scale = (30000.0 / total) ** 0.5
+                ncols = max(2, int(ncols * scale))
+                nrows = max(2, int(nrows * scale))
+            lats = np.linspace(south, north, nrows)
+            lons = np.linspace(west, east, ncols)
+            grid_lons, grid_lats = np.meshgrid(lons, lats)
+            values = np.asarray(
+                sampler.sample(
+                    field,
+                    job.palette[0],
+                    grid_lats.ravel(),
+                    grid_lons.ravel(),
+                    job.cancel.is_set,
+                )
+            ).reshape(nrows, ncols, -1)
+            if job.cancel.is_set() or not np.isfinite(values).any():
+                return []
+            # Model footprints rarely fill the padded viewport. Shrink to
+            # the sampled footprint so coverage margins cannot empty every
+            # column; dropping whole columns keeps one shared latitude
+            # vector behind for fills and contouring.
+            finite = np.isfinite(values).all(axis=-1)
+            rows_with_data = np.flatnonzero(finite.any(axis=1))
+            cols_with_data = np.flatnonzero(finite.any(axis=0))
+            first_row, last_row = rows_with_data[0], rows_with_data[-1]
+            first_col, last_col = cols_with_data[0], cols_with_data[-1]
+            row_slice = slice(first_row, last_row + 1)
+            col_slice = slice(first_col, last_col + 1)
+            values = values[row_slice, col_slice]
+            finite = finite[row_slice, col_slice]
+            lats = lats[row_slice]
+            lons = lons[col_slice]
+            if field == "wind":
+                speed = np.hypot(values[..., 0], values[..., 1])
+                direction = (
+                    np.degrees(np.arctan2(-values[..., 0], -values[..., 1])) + 360.0
+                ) % 360.0
+            columns = []
+            for index in range(values.shape[1]):
+                if not finite[:, index].all():
+                    continue
+                lon = (lons[index] + 180.0) % 360.0 - 180.0
+                if field == "wind":
+                    columns.append(
+                        [
+                            (
+                                float(direction[row, index]),
+                                float(speed[row, index]),
+                                (float(lats[row]), float(lon)),
+                            )
+                            for row in range(values.shape[0])
+                        ]
+                    )
+                else:
+                    columns.append(
+                        [
+                            (
+                                float(lats[row]),
+                                float(lon),
+                                float(values[row, index, 0]),
+                            )
+                            for row in range(values.shape[0])
+                        ]
+                    )
+            return columns if len(columns) >= 2 else []
+        finally:
+            for _, provider in providers:
+                if isinstance(provider, Grib) and provider not in self._gribs.values():
+                    provider.close()
 
     @staticmethod
     def _show_isobars(job):
@@ -262,6 +394,19 @@ class WindOverlayRenderer(OverlayRenderer):
         pressure = self._load_pressure(job) if self._show_isobars(job) else []
         if job.cancel.is_set():
             return None
+        fill_data = None
+        if (
+            data
+            and not self._columns_share_lats(data, lambda point: point[2][0])
+            and self._gridded_sources(job)
+        ):
+            # The gradient fill builds quads between neighboring columns,
+            # so a ragged multi-model union leaves it empty. Fill from a
+            # resampled regular grid while barbs keep the dense native
+            # points.
+            fill_data = self._resample_field(job, "wind") or None
+            if job.cancel.is_set():
+                return None
         # Keep land-mask work on the worker, alongside weather sampling.
         # Only completed jobs publish these vectors to the foreground.
         barb_data = data
@@ -293,6 +438,7 @@ class WindOverlayRenderer(OverlayRenderer):
             cairo.Context(surface),
             data,
             pressure,
+            fill_data=fill_data,
             draw_barbs=False,
         )
         surface.flush()

@@ -1447,6 +1447,58 @@ into `dev`; no upstream PR was created or updated.
 - Intended upstream scope: serialdatasource.py and its focused shared-reader
   regressions, extracted from freshly fetched parent master and validated there.
 
+## Weather panel and independent GRIB overlays
+
+- Status: candidate; local work on `feature/weather-panel` from `dev`.
+- Review / functional commits: fork commits `83e8612` (weather dock),
+  `bcc4047` (overlay rendering with mixed-grid isobar/fill resampling);
+  merged into `dev`. No upstream PR created yet.
+- Scope: Qt Weather dock with independent wind/isobar visibility, wind display
+  preferences, forecast import/library access, and configurable isobar spacing,
+  opacity, and pressure labels. Skip wind loading when only pressure is displayed;
+  sampling changes are tracked separately below.
+- Dependencies: existing Qt workspace/dock support and pressure isobar renderer
+  on `dev`; extract after those prerequisites are available upstream.
+- Live scrubbing: commit slider positions at 16 ms intervals and let compatible
+  in-flight weather renders finish while retaining only the latest pending time.
+  This avoids starvation during continuous dragging; source/style changes and
+  disabling overlays still discard incompatible work.
+- Validation: 101 Qt integration tests and 54 weather/chart rendering tests pass;
+  Black, Flake8, and visual inspection pass. Targeted mypy reports an existing
+  `core/nmea2000datasource.py:63` error, also reproduced against `dev`.
+- Intended upstream scope: weather controls and shared rendering settings;
+  exclude this fork contribution record.
+
+## Shared weather interpolation and record selection
+
+- Status: candidate; dependent local work on `feature/weather-panel` while its
+  panel/scrubbing changes are under development. Fork commit `a29763f`;
+  merged into `dev`. No upstream PR created yet.
+- Scope: shared wind/pressure record index and linear time/bilinear space sampler;
+  pixel-center coordinates; field/level/run/model/member matching; cross-file
+  bracketing; explicit exact/single-record/missing-data paths; shared routing,
+  frontier batch, cursor, and overlay selection. Newest runs take precedence;
+  older runs fill gaps. Distinct model runs/members are never blended.
+- Dependencies: current GRIB/GDAL APIs and weather rendering in `dev`; current
+  and frontier routing integrations should be extracted after their prerequisites
+  are available upstream. Decoder and tide/gust behavior are unchanged.
+- Functional commits / review: pending. Keep the sampler and consumer integration
+  coherent when committing; keep fork policy/tracking out of upstream scope.
+- Numerical changes and measured performance: documented in
+  `docs/weather-sampling.md`. Synthetic analytical tests verify numerical answers,
+  missing-data boundaries, cross-file selection, batch/scalar agreement, and
+  resource bounds. Real GFS queries now change within an hour; median warm point
+  sampling measured 0.23 ms versus 0.43 ms on `dev`, with a slower cold query
+  (53 ms versus 15 ms) for record indexing/decoding.
+- Type checking: nine diagnostics in four unchanged files reproduced on `dev`
+  using the same environment; no diagnostics in the changed sampler/consumers.
+- Validation: full pytest run passed 854 tests and 106 subtests, including the
+  isolated 101-test Qt integration suite. After final handle-lifetime cleanup,
+  133 focused tests and 14 subtests passed, including 25 analytical sampler and
+  resource tests. Black, Flake8, and `git diff --check` pass for this work.
+  At fork merge, the full suite passed 863 tests and 106 subtests, including
+  mixed-grid isobar/fill regression tests against real multi-model GRIBs.
+
 ## Qt routing panel cleanup
 
 - Status: candidate; fork review [PR #26](https://github.com/evanlivingston/gweatherrouting/pull/26)
@@ -1750,3 +1802,54 @@ into `dev`; no upstream PR was created or updated.
 - Fork merge/retarget prerequisites in the preceding feature entries are now
   fulfilled. Their upstream candidate/queued statuses remain unchanged; no
   upstream publication or merge was performed or authorized by this integration.
+
+## Crisp live wind barbs — 2026-10-15
+
+- Status: candidate; fork review [#34](https://github.com/evanlivingston/gweatherrouting/pull/34),
+  approved by the user for merging together with all existing local weather
+  changes. Local implementation `3618dcc` starts from `dev` at `60f4814`;
+  review adaptation `b3c686a` initially targeted the published `dev` before
+  incorporating the complete local branch at the user's request.
+- Scope: keep wind barbs outside the cached raster in GTK and Qt; draw
+  fixed-size vector symbols at current map positions throughout zoom/pan.
+  Reuse completed weather samples, filter land on the background worker,
+  batch strokes/fills by color, and cache geometry for stationary repaints.
+- Display selection: the saved `gribBarbDensity` preference offers Sparse,
+  Standard, Dense, Very dense, and All forecast points in Qt's Weather panel
+  and GTK's weather settings. Standard retains 44-logical-pixel screen cells
+  and a 900-symbol budget. Other thinned presets use 64/28/16-pixel cells
+  with symbol budgets scaled by cell area; All forecast points bypasses
+  thinning and the count budget. Selection is spread across the viewport.
+  Changes rebuild only foreground geometry, reusing completed weather data.
+  This changes displayed symbol density, not forecast interpolation, source
+  precedence, routing calculations, fill, or pressure contours. Calm symbols,
+  wind directions, colors, and meteorological feather/pennant values are kept.
+- Performance: synthetic 10,000-sample, 1280-by-800 Cairo benchmark, 15 timed
+  redraws after warmup, land symbols enabled: old per-symbol drawing median
+  105.755 ms versus culled/thinned/batched live drawing 8.249 ms (620 symbols,
+  about 13x faster). This includes projection/selection for live drawing;
+  old projection was precomputed. It measures glyph drawing, not application
+  frame rate, GRIB loading, or cached-image blitting.
+- Validation: full suite passes 936 tests and 114 subtests. Standalone Qt
+  suite passed 115 tests and 23 subtests before the final calm-symbol/cache
+  follow-ups; final Qt barb/zoom checks pass 6 tests and 2 subtests. New checks
+  cover fixed-size raster output through fractional zoom and Retina scaling,
+  native-grid thinning/view coverage, land-worker isolation, unchanged
+  projection/notation, and stationary geometry reuse. Black and diff checks
+  pass. Scoped Flake8 retains one existing resampling-complexity failure;
+  scoped mypy retains 10 errors in 5 files, reproduced on clean `dev`.
+- Density-control follow-up validation: 49 renderer/GTK settings tests and
+  3 focused Qt checks pass, covering monotonic density, uncapped All forecast
+  points, persistence, view refresh, and foreground-only invalidation without
+  forecast reload. Black and diff checks pass; scoped Flake8 retains the same
+  resampling-complexity failure. Expanded scoped mypy reports the existing 32
+  errors in 8 files, including GTK settings dependencies.
+- Dependencies/upstream scope: shared background wind renderer and forecast
+  sampling already integrated in `dev`; Qt foreground integration depends on
+  the Qt frontend. Extract the shared/GTK renderer and focused Qt integration
+  separately when their upstream prerequisites are available.
+- PR #34 includes the existing local weather stack: shared sampling
+  (`a29763f`), mixed-model fills/isobars (`bcc4047`), weather dock (`83e8612`),
+  and their tracking/integration commits. Its initial focused review branch
+  independently passed 932 tests and 114 subtests, Black, Flake8, and diff
+  checks before the user requested including this full stack.

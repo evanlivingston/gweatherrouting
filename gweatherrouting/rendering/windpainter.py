@@ -194,7 +194,7 @@ class WindPainter:
 
         cr.restore()
 
-    def draw(self, gpsmap, cr, data, pressure=None, draw_barbs=True):
+    def draw(self, gpsmap, cr, data, pressure=None, fill_data=None, draw_barbs=True):
         """Draw the cached background (fill + isobars) and, optionally, barbs.
 
         Background rendering passes ``draw_barbs=False`` so barbs stay out of
@@ -209,8 +209,11 @@ class WindPainter:
             scale = 1
 
         if data:
-            # Draw color fill (smooth gradient between grid points)
-            self._draw_color_fill(gpsmap, cr, data, scale)
+            # Draw color fill (smooth gradient between grid points).
+            # A ragged multi-model union cannot form quads, so the caller
+            # may supply a resampled regular grid for the fill while barbs
+            # keep the dense native points.
+            self._draw_color_fill(gpsmap, cr, fill_data if fill_data else data, scale)
 
         # Isobars sit above the fill so thin lines stay readable.
         self.draw_isobars(gpsmap, cr, pressure)
