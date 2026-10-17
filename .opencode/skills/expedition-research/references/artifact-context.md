@@ -50,9 +50,9 @@ Historical extraction mapping from session tool output:
 - `main/a3`: additional cabinet; extracted under `a3out/`.
 
 Resolve installer-ID filenames through the MSI file/directory tables or
-binary metadata before assigning module/provider names. No current
-Ghidra project, decompiler-output directory, or complete DLL-name mapping
-was recovered; retrieve those paths from the primary session if needed.
+binary metadata before assigning module/provider names. The later foundation
+recovery located the existing Ghidra project and exports; see
+`foundation.md` before regenerating any analysis.
 
 ## Historical installer identity (revalidate)
 

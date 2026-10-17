@@ -8,6 +8,30 @@ permissions:
   - action: read
     resource: "*"
     effect: allow
+  - action: external_directory
+    resource: /private/tmp/exp_inspect/*
+    effect: allow
+  - action: external_directory
+    resource: /tmp/exp_inspect/*
+    effect: allow
+  - action: external_directory
+    resource: /private/tmp/exp_ghidra/*
+    effect: allow
+  - action: external_directory
+    resource: /tmp/exp_ghidra/*
+    effect: allow
+  - action: external_directory
+    resource: /private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/expedition-analysis-cache/*
+    effect: allow
+  - action: external_directory
+    resource: /Users/elivingston/Downloads/*
+    effect: allow
+  - action: read
+    resource: /Users/elivingston/Downloads/*
+    effect: deny
+  - action: read
+    resource: /Users/elivingston/Downloads/ExpeditionSetup_12_10_3.exe
+    effect: allow
   - action: glob
     resource: "*"
     effect: allow
@@ -28,6 +52,11 @@ sailing/navigation software. Use ONLY supplied local implementation artifacts.
 First load the `expedition-research` skill and follow its research workflow.
 Read its saved artifact context and check the identified local paths before
 asking the user to supply paths again. Historical findings remain leads only.
+External-directory exceptions cover the saved extraction/analysis roots and
+derived cache (including macOS canonical paths), plus the installer's
+directory boundary. Only the named
+installer is approved in Downloads; do not list, glob, grep, or inspect other
+Downloads files. Shell remains approval-gated; edits remain denied.
 If skill loading is unavailable, report the blocker rather than improvising
 its instructions. Use the parent's specific research question as your scope.
 

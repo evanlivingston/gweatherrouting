@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "status": "Historical trace leads, not independently reverified behavioral findings",
+  "source_session": "ses_eb52c69a4ffeQZQOyzd8a5g9PJ",
+  "module": "Expedition.exe",
+  "sha256": "a51d83ac11199a4d5a5170dd72a6c8772c43ed45c75254984208008f0c8d58e4",
+  "image_base": "0x140000000",
+  "leads": [
+    {
+      "topic": "Native ENC location-to-object query",
+      "start_va": "0x1400e9d00",
+      "stop_va_exclusive": "0x1400e9d70",
+      "candidate_call_va": "0x140203c60",
+      "extract": "extracts/1400e9d00-1400e9d70.asm"
+    },
+    {
+      "topic": "Native ENC sounding and attribute display consumer",
+      "start_va": "0x1400ea120",
+      "stop_va_exclusive": "0x1400ea821",
+      "candidate_attribute_builder_va": "0x140205240",
+      "extract": "extracts/1400ea120-1400ea821.asm"
+    },
+    {
+      "topic": "Native ENC numerical attribute unit conversion and formatting",
+      "start_va": "0x14023c5d5",
+      "stop_va_exclusive": "0x14023ca45",
+      "extract": "extracts/14023c5d5-14023ca45.asm"
+    }
+  ],
+  "unknowns": [
+    "Navionics depth-specific attribute construction below DLL VA 0x180069970",
+    "C-MAP depth-query implementation and module identity"
+  ]
+}
