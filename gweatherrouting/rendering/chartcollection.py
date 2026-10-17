@@ -33,9 +33,8 @@ from .chartlayer import ChartLayer
 from .chsrenderer import CHSRenderer
 from .gdalrasterchart import GDALRasterChart
 from .gdalvectorchart import GDALVectorChart
-from .encrenderer import ENCOverlayRenderer
+from .quiltrenderer import QuiltRenderer, describe_charts
 from gweatherrouting.rendering.overlayrenderer import paint_viewport
-from .vectordrawer.s57chartdrawer import S57ChartDrawer
 from .gshhs import GSHHSVectorChart
 
 logger = logging.getLogger("gweatherrouting")
@@ -52,7 +51,8 @@ class ChartCollection:
         self._chart_surfaces: WeakKeyDictionary[
             object, tuple[tuple, MapViewport, cairo.ImageSurface]
         ] = WeakKeyDictionary()
-        self._enc_renderer = ENCOverlayRenderer(schedule)
+        self._quilt_renderer = QuiltRenderer(schedule)
+        self._enc_renderer = self._quilt_renderer  # Compatibility for diagnostics.
         self._chs_renderer = CHSRenderer(os.path.join(DATA_DIR, "chs-tiles"), schedule)
 
         self.settings_manager.register_on_change(
@@ -251,24 +251,17 @@ class ChartCollection:
         return chart
 
     def do_draw(self, gpsmap, cr):
-        base, enc = [], []
-        for chart in self.charts:
-            if isinstance(chart, GDALVectorChart) and isinstance(
-                chart.drawer, S57ChartDrawer
-            ):
-                if chart.enabled:
-                    enc.append(
-                        (chart.path, chart._native_scale, chart._coverage_envelopes)
-                    )
-            else:
-                base.append(chart)
+        base, detail = describe_charts(self.charts)
         worker = getattr(gpsmap, "_base_chart_renderer", None)
         if worker is None or not worker.draw_base(
             gpsmap, cr, base, self._palette, fallback=self._draw_base
         ):
             self._draw_base(gpsmap, cr, base)
         self._chs_renderer.draw(gpsmap, cr)
-        self._enc_renderer.draw(gpsmap, cr, tuple(enc), self._palette)
+        self._quilt_renderer.draw(gpsmap, cr, detail, self._palette)
+
+    def frame_revision(self, canvas):
+        return self._quilt_renderer.frame_revision(canvas)
 
     def _draw_base(self, gpsmap, cr, charts):
         # Chart pixels are static while instruments, weather and routes repaint.

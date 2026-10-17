@@ -41,6 +41,7 @@ class RenderState:
     retry_after: float = 0.0
     demand: object = None
     prefetched: object = None
+    frame_revision: int = 0
 
 
 def fits(viewport, canvas):
@@ -105,6 +106,7 @@ class OverlayRenderer:
         self._active_job: RenderJob | None = None
         self._coalesce_active = True
         self._next_request_id = 0
+        self._frame_serial = 0
         self._speculative: OrderedDict = OrderedDict()
         self._speculative_active: tuple | None = None
         # Bounded speculative retention: at most two completed frames and
@@ -247,12 +249,25 @@ class OverlayRenderer:
         """Optional observer; no production event history or GUI access in workers."""
         pass
 
+    def _content_key(self, charts):
+        return tuple(c[0] for c in charts)
+
+    def frame_revision(self, canvas):
+        """Published pixels generation for frontends baking reusable composites."""
+        state = self._states.get(canvas)
+        return state.frame_revision if state is not None else 0
+
+    def _publish_frame(self, state, job, surface):
+        self._frame_serial += 1
+        state.frame = (job, surface)
+        state.frame_revision = self._frame_serial
+
     def draw(self, canvas, cr, charts, palette):
         if not charts:
             self.forget(canvas)
             return
         factor = canvas.get_scale_factor()
-        key = (palette, factor, tuple(c[0] for c in charts))
+        key = (palette, factor, self._content_key(charts))
         state = self._states.setdefault(canvas, RenderState())
         state.key = key
         state.demand = MapViewport(canvas, on_redraw=lambda: None)
@@ -260,7 +275,7 @@ class OverlayRenderer:
             for index, (spec_job, surface) in enumerate(state.prefetched):
                 if spec_job.key == key and self._fits_job(spec_job, canvas):
                     state.prefetched.pop(index)
-                    state.frame = (spec_job, surface)
+                    self._publish_frame(state, spec_job, surface)
                     spec_job.published_at = time.monotonic()
                     self.prefetch_metrics["hits"] += 1
                     self._schedule_event("publish", spec_job)
@@ -453,7 +468,7 @@ class OverlayRenderer:
                 and not job.cancel.is_set()
                 and self._can_complete(job, state.key)
             ):
-                state.frame = (job, surface)
+                self._publish_frame(state, job, surface)
                 job.published_at = time.monotonic()
                 self._schedule_event("publish", job)
                 canvas.queue_draw()

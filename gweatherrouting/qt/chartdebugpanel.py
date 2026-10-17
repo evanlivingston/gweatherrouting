@@ -92,6 +92,16 @@ def chart_status(chart, window, scale, seamarks_layer=None):
     is_enc = isinstance(chart, GDALVectorChart) and isinstance(
         chart.drawer, S57ChartDrawer
     )
+    is_raster = isinstance(chart, GDALRasterChart)
+    raster_entries = (
+        [
+            entry
+            for entry in chart.metadata or ()
+            if chart_scale_visible(entry[4] if len(entry) > 4 else 0, scale)
+        ]
+        if is_raster
+        else ()
+    )
 
     def would_draw():
         if is_enc:
@@ -102,8 +112,8 @@ def chart_status(chart, window, scale, seamarks_layer=None):
             ):
                 return False
             return True
-        if isinstance(chart, GDALRasterChart):
-            return raster_overlaps_window(chart.metadata, window)
+        if is_raster:
+            return raster_overlaps_window(raster_entries, window)
         if chart is seamarks_layer:
             return scale <= SEAMARKS_MAX_METERS_PER_PIXEL
         # Coastlines, CM93 and simple vectors paint wherever they have data;
@@ -113,6 +123,8 @@ def chart_status(chart, window, scale, seamarks_layer=None):
     if would_draw():
         return "drawing" if chart.enabled else "available"
     if is_enc and not chart_scale_visible(chart._native_scale, scale):
+        return "hidden by scale"
+    if is_raster and chart.metadata and not raster_entries:
         return "hidden by scale"
     return "disabled" if not chart.enabled else "outside window"
 

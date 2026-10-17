@@ -626,6 +626,82 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(renderer._states)
         self.assertFalse(self.controller.charts.maps)
 
+    def test_published_chart_frame_reaches_cached_image_without_view_change(self):
+        import cairo
+        from gweatherrouting.qt.mapcanvas import TrackMap
+
+        canvas = TrackMap(self.controller)
+        self.addCleanup(canvas.close)
+        canvas.resize(400, 300)
+        renderer = self.controller.charts._quilt_renderer
+        sources = (("synthetic.000", 12000, ()),)
+
+        def draw(canvas, cr):
+            renderer.draw(canvas, cr, sources, "cm93")
+
+        with (
+            patch.object(renderer, "_start_next"),
+            patch.object(canvas.charts, "do_draw", side_effect=draw),
+            patch.object(canvas.wind, "draw"),
+            patch.object(canvas.marine, "do_draw"),
+        ):
+            for moving in (False, True):
+                with self.subTest(moving=moving):
+                    renderer.forget(canvas)
+                    canvas.drag = None
+                    key = canvas._base_key()
+                    canvas._base_cache, _ = canvas._resolve_reusable_layer(
+                        None, key, canvas._base_image
+                    )
+                    old_cache = canvas._base_cache
+                    job = renderer._states[canvas].requested
+                    surface = cairo.ImageSurface(
+                        cairo.FORMAT_ARGB32,
+                        job.viewport.width * job.factor,
+                        job.viewport.height * job.factor,
+                    )
+                    surface.set_device_scale(job.factor, job.factor)
+                    cr = cairo.Context(surface)
+                    cr.set_source_rgb(1, 0, 0)
+                    cr.paint()
+                    position = (canvas._center_lat, canvas._center_lon, canvas._zoom)
+                    # During gesture notifications queue_draw deliberately keeps
+                    # cached images. The published generation must still win.
+                    canvas.drag = (0, 0) if moving else None
+                    renderer._completed(canvas, job, surface, None)
+                    self.assertNotEqual(canvas._base_key(), key)
+                    if moving:
+                        self.assertIs(canvas._base_cache, old_cache)
+                    canvas._base_cache, _ = canvas._resolve_reusable_layer(
+                        canvas._base_cache, canvas._base_key(), canvas._base_image
+                    )
+                    self.assertIsNot(canvas._base_cache, old_cache)
+                    image = canvas._base_cache[4]
+                    color = image.pixelColor(image.width() // 2, image.height() // 2)
+                    self.assertEqual(
+                        (color.red(), color.green(), color.blue()), (255, 0, 0)
+                    )
+                    self.assertEqual(
+                        position, (canvas._center_lat, canvas._center_lon, canvas._zoom)
+                    )
+                    canvas.drag = None
+
+    def test_raster_debug_status_tracks_per_file_scale_window(self):
+        from gweatherrouting.qt.chartdebugpanel import chart_status
+        from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
+
+        entry = ("harbor", ((49, -124), (48, -123)), 2, 2, 5000)
+        chart = GDALRasterChart("/charts", None, metadata=[entry])
+        window = (48, 49, -124, -123)
+        self.assertEqual(chart_status(chart, window, 5000 / 3779.527559), "drawing")
+        self.assertEqual(
+            chart_status(chart, window, 200000 / 3779.527559), "hidden by scale"
+        )
+        chart.metadata.append(("coast", entry[1], 2, 2, 200000))
+        self.assertEqual(chart_status(chart, window, 200000 / 3779.527559), "drawing")
+        chart.enabled = False
+        self.assertEqual(chart_status(chart, window, 200000 / 3779.527559), "available")
+
     def test_production_enc_renders_ogr_dataset_with_owned_qt_pixels(self):
         import cairo
         from osgeo import ogr

@@ -420,6 +420,8 @@ class TrackMap(QWidget, MercatorProjection):
             self.controller.settings.chartPalette,
             self._wind_style_key(),
             self._marine_key(),
+            self.charts.frame_revision(self),
+            self._base_chart_renderer.frame_revision(self),
         )
 
     @staticmethod

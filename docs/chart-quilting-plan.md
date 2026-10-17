@@ -1,7 +1,7 @@
 # Chart quilting plan (Expedition-style), Qt first
 
-Status: design plan for review; no implementation yet. Target branch for
-implementation: `feature/chart-quilting` (worktree off `dev`).
+Status: Q1 merged in fork PR #41. Q2 implemented locally on
+`feature/chart-quilting-q2`, pending review. Q3/Q4 remain separate slices.
 
 ## Goal
 
@@ -132,3 +132,47 @@ automatically once rasters carry `_native_scale`.
 - `chartQuilting` defaults **on**.
 - Scale-less raster files: always visible, lowest priority (never beat an ENC).
 - Red debug bbox rectangles: removed outright (no env-flag replacement).
+
+## Q2 implementation notes
+
+- `QuiltRenderer` generalizes the existing ENC union/difference/clip algorithm.
+  `encrenderer` remains a compatibility import. The collection snapshots frozen
+  per-file descriptors, moves rasters out of the synchronous base list, and
+  paints base → CHS → mixed ENC/raster quilt. CM93 and seamarks retain their
+  existing paths. Raster source selection now uses each file's scale window,
+  not the layer's most-detailed representative scale. The inspector mirrors
+  that per-file visibility rule.
+- Equally ranked ENC/raster sources prefer ENC, then path for deterministic
+  ties. Unknown-scale rasters remain visible as last-priority hole fillers,
+  even behind unknown-scale ENCs. Raster coverage is the existing rectangular
+  footprint, not an alpha/no-data mask; raster placement/decoding is unchanged.
+  For ENCs without coverage metadata, fallback sources are grouped and painted
+  behind existing pixels so they cannot erase higher-priority ENC features.
+  The existing layer-level best-at-center query remains an approximation for
+  directories containing multiple scales; paint ownership is per file.
+- A single overlay worker owns private ENC and raster handles. ENC retention
+  remains eight entries; decoded rasters retain at most eight entries and
+  128 MiB of Cairo pixel buffers. Oversized rasters render without retention.
+  These are retention limits, not peak-memory limits: the existing full-raster
+  decode can temporarily exceed them. Cancellation is checked between sources
+  and after decoding; a GDAL read already in progress is not interruptible.
+  Failed sources do not claim coverage or prevent other sources from rendering.
+- **Finding 6 recheck:** on the Q2 base, `TrackMap.queue_draw()` already clears
+  the base cache when stationary. Thus the earlier static-cache diagnosis is
+  not sufficient by itself to explain every fallback on current `dev`.
+  During gestures the notification intentionally preserves the cached image.
+  Q2 makes accepted chart/base-worker frame generations explicit in the Qt
+  composite key, including prefetched-frame adoption. Tests assert that a late
+  published frame reaches the next composite with no view change, both with
+  normal invalidation and with the cached image retained during a gesture.
+- No scale, resolution or geometry simplification formulas change in Q2.
+  Mixed-source ordering and raster chart-level scale culling are intentional
+  behavior changes. The off/legacy-stack switch belongs to Q3; performance
+  benchmarking and real-chart acceptance remain Q4 (no speedup claim here).
+
+Q2 local validation: 284 targeted tests and 42 subtests passed (mixed quilting,
+raster metadata, chart selection/rendering, overlay scheduling/prefetch, CHS,
+weather overlays, Qt base charts and preview). Changed Python files pass
+`black --check`; `git diff --check` is clean. Tests include a paletted GeoTIFF
+through the production raster loader; no real KAP or interactive mixed-library
+acceptance has been performed.
