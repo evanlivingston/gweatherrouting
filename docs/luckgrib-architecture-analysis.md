@@ -108,3 +108,49 @@ places where we can exceed the reference rather than merely match it.
 Analysis was static and read-only. Re-running it requires the pseudocode exports and the
 application binary above. The Ghidra projects are empty; populating them is a separate,
 unbounded task that this analysis does not depend on.
+
+## 2026-10-20 follow-up: file selection and interpolation boundary
+
+This follow-up is a targeted static trace, not an extension of the claims supported
+by the original render/field pseudocode. It was independently inspected by an OpenAI
+analysis subagent using `nm -arch arm64 -C` and `otool -arch arm64 -tvV`; no target
+application execution, web/manual evidence or Ghidra project mutation was used.
+
+**Owning artifact:**
+`/Applications/LuckGrib.app/Contents/Frameworks/cwmGrib.framework/Versions/A/cwmGrib`,
+SHA-256 `2ee197b9af2a326e07e1fd122ad65ed70971d949fa75b18311b14e6d6d447ff7`.
+Addresses below are arm64 Mach-O virtual addresses printed by those tools, not file
+offsets. The app hash matches the identity recorded above.
+
+| Traced implementation | Address | Supported behavior |
+| --- | --- | --- |
+| `GribFileManager.fileForTime(_:latlon:)` | `0x11f004` | Filters candidate files by time/location, selects and returns one candidate. This is pointwise selection, not proof of whole-map file pinning. |
+| `GribFileEvaluator::setFile(std::shared_ptr<grib_file>, bool)` | `0x843b0` | Evaluator receives one file; fields are built from that file's record groups. |
+| `-[GribFileContent gribTimeIntervalForTime:lower:upper:]` | `0x545a0` | Finds lower/upper times in the content's ordered time groups. |
+| `GribFileEvaluatorImpl::initializeScalarForTime` | `0x83c34` | Builds fields from adjacent time groups for the evaluator's file. |
+| `FieldInterpolator::contextForTime` and scalar `eval01` path | `0x60f8c`, `0x601ec` | Selects an interval and evaluates its two fields, supporting within-file temporal interpolation. |
+
+Field configuration also carries ensemble type/member metadata; separate member and
+standard-deviation information paths were observed. These establish distinct member
+configuration, not every aggregation algorithm. `setBlendingMode` alone is not
+evidence of blending weather forecasts.
+
+**Limits:** no cross-file blending was established in this path. This is not a
+universal negative claim about all display/routing features. Parsing and selection
+of multiple production runs within a single file were not fully traced; run
+coherence in such containers remains unknown. Different point requests may select
+different files. Ensemble aggregation details and other multi-file consumers remain
+outside the inspected coverage.
+
+Reinspection commands (substitute the artifact path above for `"$binary"`):
+
+```sh
+shasum -a 256 "$binary"
+nm -arch arm64 -C "$binary" | rg 'fileForTime|gribTimeIntervalForTime|FileEvaluator.*(setFile|initialize|eval)'
+otool -arch arm64 -tvV "$binary" | rg -n -A130 -B3 '0000000000083c34|00000000000843b0|000000000011f004'
+```
+
+The trace supports choosing a file before interpolation, not scientific equivalence
+between a file and a forecast run. Our stricter whole-display policy is a user
+decision recorded in [forecast display coherence](rendering-performance-plan.md#forecast-display-coherence),
+with implementation pending and routing behavior unchanged.
