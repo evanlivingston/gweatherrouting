@@ -1534,6 +1534,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._update_enc_status()
             if self._chart_ready_at is None:
                 self._chart_ready_at = time.perf_counter()
+            if self._weather_ready_at is None:
+                self._weather_ready_at = time.perf_counter()
 
         def _update_enc_status(self):
             """The ENC source's own state, in the scene's own status.
