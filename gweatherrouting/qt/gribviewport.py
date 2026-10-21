@@ -1327,6 +1327,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_status_item = None
             self._weather_ready_at = None
             self._chart_requested_after_weather = False
+            self._chart_preview = False
             if self._chart_layer:
                 self._chart_provider = chart_image_provider()
                 self.engine().addImageProvider("chart", self._chart_provider)
@@ -1509,6 +1510,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_viewport = metadata["viewport"]
             url = cast(Any, self._chart_provider).publish(generation, image)
             cast(QObject, self._chart).setProperty("source", QUrl(url))
+            # New composition published: clear preview state.
+            cast(QObject, self._chart).setProperty("chartPreview", False)
+            cast(QObject, self._chart).setProperty("chartPreviewScale", 1.0)
+            self._chart_preview = False
             self.counters["chart_publications"] += 1
             self._place_chart()
             self._chart_publish_state = self._chart_state_now()
@@ -1829,9 +1834,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         camera,
                         self._chart_model._published is not None,
                     ):
-                        # Withdraw old-scale/time ENC immediately, not after
-                        # the settle timer or the replacement worker finishes.
-                        cast(QObject, self._chart).setProperty("source", QUrl(""))
+                        # Zoom or time changed: show the retained chart as a
+                        # scaled preview instead of withdrawing it.  Pan only
+                        # keeps the chart at its current scale.
+                        zoom_diff = camera.zoom - previous_chart_camera.zoom
+                        time_changed = previous_chart_camera.stamp() != camera.stamp()
+                        if zoom_diff != 0.0 or time_changed:
+                            scale = 2.0**zoom_diff
+                            cast(QObject, self._chart).setProperty("chartPreview", True)
+                            cast(QObject, self._chart).setProperty(
+                                "chartPreviewScale", scale
+                            )
+                            self._chart_preview = True
+                        else:
+                            cast(QObject, self._chart).setProperty(
+                                "chartPreview", False
+                            )
+                            cast(QObject, self._chart).setProperty(
+                                "chartPreviewScale", 1.0
+                            )
+                            self._chart_preview = False
                     self._place_chart()
                 state, field, selection = self._model.update(camera)
                 if state != "ready":

@@ -148,8 +148,10 @@ one slice at a time; decide continue/narrow/pivot/stop at each gate.
 | --- | --- | --- |
 | P0: decision (current) | Source-grounded design, preview revision and integration boundaries | Documentation validation; no runtime claim |
 | P1: durable prepared cell | Real cell builds, closes, reloads in a fresh process and renders through a Cairo adapter without source reopen for drawing | Attributes/Z/topology/order/coverage and selection preserved; base/update/schema/corruption/concurrent-write invalidation; bounded CPU/disk use; separate cold-build/disk-warm/memory-warm costs |
-| P2: retained geometry | Areas with holes, strokes and exact multi-cell ownership in native QSG | App-host Metal rendering, harbor/DPR/projection checks; resident camera changes cause zero decode/tessellation/unchanged-buffer uploads; explicit fallback |
-| P3: full portrayal/interaction | Separate labels/symbols, preview states and weather-independent chart demand | Supported feature inventory, final glyph sizes and soundings; pan/zoom/reversal/recovery under stalled workers; no blanking of retained covered areas or stale content reported current |
+| P2.1: chart texture preview | Preview visible during zoom/pan-settle, full-detail replaces preview on settle; chart never blanks during interaction | Gate: zoom does not blank chart; preview scale bounded; replace-on-settle; zero blank-covered-area events during zoom |
+| P2.2: retained geometry | Areas with holes, strokes and exact multi-cell ownership in native QSG | App-host Metal rendering, harbor/DPR/projection checks; resident camera changes cause zero decode/tessellation/unchanged-buffer uploads; explicit fallback |
+| P2.3: separate labels/symbols | Screen-space labels keep final size during preview | Gate: label size constant during zoom preview; final glyph sizes and soundings correct |
+| P3: full portrayal/interaction | Preview states and weather-independent chart demand; no blanking of retained covered areas | Supported feature inventory; pan/zoom/reversal/recovery under stalled workers; no stale content reported current |
 | P4: app integration/hardening | Main/log maps, layers/switches/recovery; reconcile #81 with #82/#83 | Actual combined app workload, cold/warm revisits, no forecast, all wind modes, time/source/style/DPR changes, shared eviction, context loss/shutdown, memory plateau/platform matrix |
 
 P1 is not the complete port. Reopening sources is allowed for build/invalidation.
