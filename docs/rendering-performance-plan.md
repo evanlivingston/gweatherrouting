@@ -25,6 +25,39 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+### ENC retained architecture port
+
+**2026-10-21 accepted direction:** port OpenCPN's architectural ideas into
+Python/Qt, not its C++ engine. The user rejected the app's ENC interaction even
+after PR #81's prepared-feature cache halved isolated repeat composition time.
+Functional gates and composition timings did not establish usable zoom/pan.
+
+The detailed [ENC port specification](enc-retained-architecture.md) maps durable
+prepared charts, resident Qt Quick geometry, authoritative coverage planning,
+screen-space annotations and continuous interaction into reviewable slices.
+It explicitly permits bounded georeferenced zoom previews; final detail and
+labels must refresh and preview coverage must never be reported as current.
+It preserves chart selection and supported detail rather than copying OpenCPN
+policies or claiming full S-52 parity.
+
+**Current slice P0:** design and integration boundaries only; two free-model
+read-only reviews, at most two documentation-validation rounds, no runtime
+experiments or performance claims. Separate branch from integrated fork `dev`
+`98f1787`, preserving weather residency/lookahead (#82/#83). PR #81 stays separate
+from this port. The user subsequently authorized merging #81 first; it merged
+at `386f5a1`, preserving both its ENC features and #82/#83 weather changes.
+Integration: 104 targeted passes and 13/13 app-rollout checks, not performance
+acceptance. P1 has started with free subagents. No live app/settings mutation
+is part of the port work.
+
+**Next slice P1:** durable camera-independent prepared-cell storage and a real
+cell build/reload/render vertical gate. Record schema, budgets and executable
+gate before implementation. Retained geometry, full interaction and app rollout
+are subsequent gated slices, not silently started work. #70 remains validation
+and rollout evidence, not the implementation vehicle for new techniques.
+
+### Earlier viewport checkpoint (retained evidence)
+
 **#64 next decision:** scoping and the subsequent user-authorized compatibility/
 ownership investigation are complete. Proper Python texture-item sources with
 explicit public wrapper adoption passed 19/19 checks in two fresh native processes

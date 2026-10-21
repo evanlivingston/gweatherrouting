@@ -37,6 +37,7 @@ evidence for a decision that has already been made.
 | --- | --- |
 | What the app does at start-up, and the opt-in early-weather path | [`early-weather-startup.md`](early-weather-startup.md) |
 | The target rendering architecture, and what was decided (D1–D5) | [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md) |
+| The user-directed OpenCPN-inspired ENC architecture port | [`enc-retained-architecture.md`](enc-retained-architecture.md) — durable preparation, retained Qt geometry and continuous interaction; design, not shipped |
 | The layer/ownership model, the R0–R5 sequence, the invariants and the measurement contract | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) |
 | The current performance roadmap, milestone status and the A0 decision log | [`rendering-performance-plan.md`](rendering-performance-plan.md) |
 | Which issue to work on next, and in what order | [`milestones.md`](milestones.md) — GitHub is the tracker, this is the local index |

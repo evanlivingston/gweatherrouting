@@ -19,6 +19,19 @@ executable issues. It deliberately does **not** restate the specification; it li
 
 ## Current checkpoint
 
+**2026-10-21 ENC direction:** the user chose to port OpenCPN's architectural
+ideas into our Python/Qt renderer, not embed its engine. Adopt durable prepared
+charts, retained geometry, coverage planning, separate annotations and continuous
+camera interaction. Bounded georeferenced zoom previews are now permitted as
+explicit previews, revising the earlier transformed-image rejection; final
+detail, coverage and screen-space labels must refresh. See the
+[ENC port specification](enc-retained-architecture.md) and
+[canonical checkpoint](rendering-performance-plan.md#enc-retained-architecture-port).
+This is a design decision, not implementation or performance acceptance. It
+does not change weather/routing semantics or pass #70. The user subsequently
+authorized merging existing PR #81 before starting the port's P1 implementation;
+preserve its ENC work and newer `dev` weather changes together.
+
 - **Canonical roadmap and decision ledger:**
   [`rendering-performance-plan.md`](rendering-performance-plan.md) — start at its
   "Current checkpoint". This ADR is the decision input to that roadmap.
