@@ -30,7 +30,19 @@ detail, coverage and screen-space labels must refresh. See the
 This is a design decision, not implementation or performance acceptance. It
 does not change weather/routing semantics or pass #70. The user subsequently
 authorized merging existing PR #81 before starting the port's P1 implementation;
-preserve its ENC work and newer `dev` weather changes together.
+preserve its ENC work and newer `dev` weather changes together. PR #81 merged
+at `386f5a1`; the retained-chart port continues from that integrated base.
+
+**ENC application rollout direction (after #80):** the user authorized enabling
+the completed ENC worker in the normal application viewport, retaining legacy
+recovery, without a pixel-for-pixel legacy matching requirement. The bounded
+implementation/acceptance contract is [enc-default-rollout.md](enc-default-rollout.md).
+This revises the default-off direction for this ENC slice only, subject to its
+application-level functional gate. That gate subsequently passed 13/13 on the
+verified fixture (current pan/zoom/resize/time views and legacy recovery), with
+140 targeted passes and one known base failure; see the rollout evidence.
+It does not declare the #70 platform/soak or
+presentation-latency program complete and does not change numerical sampling.
 
 - **Canonical roadmap and decision ledger:**
   [`rendering-performance-plan.md`](rendering-performance-plan.md) — start at its
