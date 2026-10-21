@@ -2337,6 +2337,74 @@ GATES["wind-all-points"] = {
     ],
 }
 
+GATES["enc-prepared-cell"] = {
+    "title": "Durable ENC cell: build, fresh-process reload and Cairo portrayal",
+    "milestone": "ENC retained architecture P1 under #51",
+    "kind": "correctness",
+    "tool": "tools/check_prepared_enc.py",
+    "endpoint": ENDPOINT_FIDELITY,
+    "requires": ["snapshot"],
+    "dependencies": ["cairo", "osgeo.gdal", "PySide6", "numpy"],
+    "timeout_s": 120,
+    "reference": {
+        "kind": "recorded-evidence",
+        "fixture": "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346",
+        "source": "docs/enc-retained-architecture.md P1 content/reload contract",
+        "note": "Raw and prepared content compared in the same run; no timing baseline.",
+    },
+    "command": [
+        "{python}",
+        "{tool}",
+        "--snapshot",
+        "{snapshot}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["prepared-puget-cell"], "frames": 1, "repeats": 1},
+    "full": {"scenarios": ["prepared-puget-cell"], "frames": 1, "repeats": 1},
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "checks": [
+        {
+            "label": "prepared-cell content and fresh-process reload complete",
+            "metric": "complete",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/enc-retained-architecture.md P1 content/reload contract",
+        }
+    ]
+    + [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/enc-retained-architecture.md P1 content/reload contract",
+        }
+        for name in (
+            "fixture_verified",
+            "cell_selected",
+            "raw_reference_drawn",
+            "prepared_chart_built",
+            "cold_source_opened_once",
+            "native_scale_preserved",
+            "coverage_preserved",
+            "inventory_preserved",
+            "pixels_match",
+            "render_nonblank",
+            "cache_disk_accounted",
+            "warm_child_succeeded",
+            "warm_child_fresh_process",
+            "warm_zero_source_opens",
+            "warm_output_matches",
+        )
+    ],
+    "open_requirements": [
+        "CPU content/mechanism gate only: no GPU retained geometry, default app "
+        "switch, input-to-present/FPS, catalogue/platform or RSS/VRAM acceptance."
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id
