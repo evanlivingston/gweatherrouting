@@ -44,6 +44,8 @@ from gweatherrouting.rendering.weatherbarbs import (
 )
 from gweatherrouting.rendering.weatherstaging import NodeSampleMemo, time_window
 from gweatherrouting.rendering.windpainter import shoreline_quality
+from gweatherrouting.qt.chartgeometry import ChartGeometryScene
+from gweatherrouting.qt.gribviewportchart import ChartCamera
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -1390,6 +1392,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._environment = self._weather.findChild(
                         QObject, "environmentLayer"
                     )
+                # P2.2.1: Find chartGeometry container for retained QSG geometry
+                self._chart_geometry_container = self._weather.findChild(
+                    QObject, "chartGeometry"
+                )
             self._published = None
             self._published_fill = None
             self._published_generations = set()
@@ -1405,6 +1411,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 chart_requests=0,
                 native_field_requests=0,
             )
+            # P2.2.1: Chart geometry scene for retained QSG area fills
+            self._chart_geometry_scene = None
+            if self._enc_chart_layer and self._chart_geometry_container is not None:
+                cache_dir = str(Path(chart_data_dir) / "enc_prepared_cache")
+                self._chart_geometry_scene = ChartGeometryScene(
+                    self._chart_geometry_container, cache_dir=cache_dir
+                )
+                self._chart_geometry_scene.set_palette(self._chart_palette)
             if self._native_weather_fields:
                 from .gpuweathertextures import (
                     NativeWeatherBudget,
@@ -1761,6 +1775,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._chart_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
+            # P2.2.1: Clean up chart geometry scene
+            if self._chart_geometry_scene is not None:
+                self._chart_geometry_scene.clear()
+                self._chart_geometry_scene = None
             self._provider.clear()
             if self._chart_provider is not None:
                 self._chart_provider.clear()
@@ -1855,6 +1873,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             )
                             self._chart_preview = False
                     self._place_chart()
+
+                # P2.2.1: Update chart geometry scene on camera change
+                if self._chart_geometry_scene is not None:
+                    # Convert ViewportCamera to MercatorProjection for geometry
+                    chart_camera = ChartCamera(camera, self.devicePixelRatio())
+                    self._chart_geometry_scene.set_camera(chart_camera)
+                    # Update cell paths from chart model
+                    cell_paths = self._chart_model.enc_cell_paths()
+                    self._chart_geometry_scene.set_cell_paths(cell_paths)
+
                 state, field, selection = self._model.update(camera)
                 if state != "ready":
                     # A miss shows the loading state; it never shows stale content.
@@ -2224,7 +2252,10 @@ def main(argv=None):
         "--native-weather-fields",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Retain native field textures (default: on); --no-native-weather-fields restores Image sources",
+        help=(
+            "Retain native field textures (default: on); "
+            "--no-native-weather-fields restores Image sources"
+        ),
     )
     parser.add_argument(
         "--screen-barbs",

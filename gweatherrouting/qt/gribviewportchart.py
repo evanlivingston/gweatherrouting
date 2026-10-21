@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, cast
 
 from gweatherrouting.core.mapviewport import MercatorProjection
 from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob, fits
+from gweatherrouting.qt.viewportenc import is_enc_path
 
 if TYPE_CHECKING:
     from gweatherrouting.rendering.weathercache import DisplayWeatherSource
@@ -525,6 +526,27 @@ class ViewportChartLayer:
             if self._enc_state == "unavailable":
                 return "ENC unavailable"
             return ""
+
+    def enc_cell_paths(self):
+        """The installed and enabled ENC cell paths (GUI thread).
+
+        Returns a tuple of cell file paths that are currently enabled in the
+        user's manifest. This is used by the geometry scene to build QSG
+        geometry for the visible cells.
+        """
+        with self._condition:
+            if not self._enc_enabled:
+                return ()
+            # Read the manifest directly to get the enabled cell paths
+            from gweatherrouting.qt.viewportenc import read_manifest
+
+            manifest = read_manifest(self._data_dir)
+            if manifest.error or not manifest.class_enabled:
+                return ()
+            paths = tuple(
+                entry[0] for entry in manifest.enabled if is_enc_path(entry[0])
+            )
+            return paths
 
     def close(self):
         """Stop the chart worker; a pending composition is released."""

@@ -12,6 +12,9 @@ import QtQuick
 // beside the chart's, never in place of it: a coverage miss says so
 // instead of showing an empty chart that reads as "there is no data here".
 //
+// P2.2.1: ChartGeometry item renders retained QSG geometry for ENC area fills.
+// It is shown when ready; the chart Image shows the preview during zoom.
+//
 // The scene is the viewport's own: the application's default path never
 // loads it.
 Item {
@@ -20,6 +23,14 @@ Item {
     // The ENC source's own state, in the scene's own words.  An empty
     // string means there is nothing to report.
     property string encStatus: ""
+    // P2.2.1: Container for retained QSG geometry (area fills).
+    // Geometry items are created in Python and parented here.
+    Item {
+        id: chartGeometry
+        objectName: "chartGeometry"
+        anchors.fill: parent
+        z: -1  // Behind the chart image
+    }
     ChartLayer {
         id: chart
         objectName: "chartLayer"
