@@ -31,14 +31,30 @@ Item {
         anchors.fill: parent
         z: -1  // Behind the chart image
     }
-    ChartLayer {
+    Item {
         id: chart
         objectName: "chartLayer"
         anchors.fill: parent
     }
+    Rectangle {
+        id: status
+        objectName: "chartStatus"
+        visible: root.chartLoading
+        x: 8
+        y: 34
+        width: statusText.implicitWidth + 12
+        height: statusText.implicitHeight + 8
+        color: "#000000be"
+        Text {
+            id: statusText
+            anchors.centerIn: parent
+            color: "white"
+            text: "Chart loading…"
+        }
+    }
     // Application-owned MBTiles/weather background/marine stay above ENC,
     // below wind barbs. Standalone use leaves this image empty.
-    ChartLayer {
+    Item {
         objectName: "environmentLayer"
         anchors.fill: parent
     }

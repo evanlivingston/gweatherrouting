@@ -703,14 +703,10 @@ class _GeometryWorker:
 
     def _invoke_ready(self, geometries: Dict[str, _CellGeometry]):
         """Invoke the ready callback on the GUI thread."""
-        from PySide6.QtCore import QMetaObject, Qt
+        from PySide6.QtCore import QTimer
 
         if self._parent_item is not None:
-            QMetaObject.invokeMethod(
-                self._parent_item,
-                lambda: self._on_ready(geometries),
-                Qt.ConnectionType.QueuedConnection,
-            )
+            QTimer.singleShot(0, lambda: self._on_ready(geometries))
         else:
             # Fallback: call directly (should not happen in normal operation)
             self._on_ready(geometries)
