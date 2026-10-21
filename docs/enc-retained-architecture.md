@@ -1,7 +1,7 @@
 # ENC retained architecture — OpenCPN-inspired port
 
 **Decision:** port the architecture into Python/Qt, not embed OpenCPN's C++
-engine. User-directed, 2026-10-21. **Runtime status: not implemented.**
+engine. User-directed, 2026-10-21. **Runtime status: P1 drafts, not validated or enabled.**
 This is implementation detail for the
 [canonical roadmap](rendering-performance-plan.md#enc-retained-architecture-port),
 not a replacement weather program or a second issue tracker.
@@ -229,3 +229,26 @@ shipped by this design. Do not provisionally start P2.
   semantics cannot be preserved, the cell exceeds the declared caps, or the
   adapter requires changes to shared weather sampling/routing. Report blockers
   instead of broadening into P2 or weakening correctness criteria.
+
+### P1 checkpoint — blocked drafts, not acceptance (2026-10-21)
+
+Existing ENC work is merged at `386f5a1` and the port branch includes it.
+Free agents started `rendering/encprepared.py`, its tests and
+`tools/check_prepared_enc.py`/gate controls. A first store draft failed primary
+review; the corrective implementation and gate agents then hit gateway rate
+limits before completing their work. An independent free-model audit was also
+rate-limited. No paid-model fallback was used.
+
+**Stop/revise:** keep these files as local, uncommitted drafts. They are not
+imported by the normal app, and no persistent cache has been enabled there.
+No P1 test run, real-cell experiment, speedup or gate PASS is claimed. Known
+review blockers include numbered-update suffix discovery, null-geometry payload
+accounting, lossless date/null field handling, bounded/corrupt artifact loading,
+and substantive round-trip tests (the store test draft is only a placeholder).
+The tool's camera construction and ability to reject an incomplete adapter also
+need review before it is run. The registered gate is preparatory, not evidence.
+
+Resume by correcting these blockers and completing tests within a newly recorded
+implementation budget, then use the configured free test-runner for targeted
+tests/formatting and the real-cell gate. Do not proceed to P2 or merge/enable the
+draft store just because the earlier ENC integration passed.
