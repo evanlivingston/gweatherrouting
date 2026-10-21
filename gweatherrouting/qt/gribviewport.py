@@ -1608,7 +1608,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_model is None or self._camera is None:
                 return
             if self._weather_ready_at is None and not (
-                self._enc_chart_layer and self._model.state == "unavailable"
+                self._enc_chart_layer and self._model.state in ("ready", "unavailable")
             ):
                 # The chart is added after the weather is presented.
                 return
@@ -1619,6 +1619,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             if self._model.busy():
                 # The weather pipeline is working: the chart waits.
+                return
+            if getattr(self._chart_model, "is_busy", False):
+                # A chart composition is already in progress: don't cancel it.
                 return
             self.counters["chart_requests"] += 1
             self._chart_requested_after_weather = True

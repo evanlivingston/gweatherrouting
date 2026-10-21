@@ -341,6 +341,12 @@ class ViewportChartLayer:
             return self._state
 
     @property
+    def is_busy(self):
+        """True if a chart composition is currently in progress."""
+        with self._condition:
+            return self._active is not None
+
+    @property
     def error(self):
         with self._condition:
             return self._error
