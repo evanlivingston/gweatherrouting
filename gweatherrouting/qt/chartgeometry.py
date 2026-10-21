@@ -1,8 +1,8 @@
-"""Retained QSG geometry for ENC chart area fills (P2.2.1).
+"""Retained QSG geometry for ENC chart area fills (P2.2.2).
 
-Builds QSGGeometryNodes from prepared ENC cells. Camera pan/zoom updates
-node transforms/vertices — zero Cairo composition, zero feature collection,
-no SimplifyPreserveTopology, no texture upload for resident cells.
+Builds QSGGeometryNodes from prepared ENC cells in a fixed reference
+coordinate system. Camera pan/zoom updates only the QSG transform matrix
+(scale + translate) — zero vertex buffer upload on camera motion.
 
 Limitations (documented):
 - Hole polygons (inner rings) are not yet handled; outer rings only.
@@ -11,18 +11,20 @@ Limitations (documented):
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from threading import Thread
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QObject, QRectF, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QTransform
 from PySide6.QtQuick import (
     QQuickItem,
     QSGFlatColorMaterial,
     QSGGeometry,
     QSGGeometryNode,
     QSGNode,
+    QSGTransformNode,
 )
 
 from gweatherrouting.core.mapviewport import MercatorProjection
@@ -39,7 +41,7 @@ _POINT2D_ATTRIBUTES = QSGGeometry.defaultAttributes_Point2D()
 
 @dataclass(frozen=True)
 class _Vertex:
-    """A 2D vertex in scene coordinates (pixels)."""
+    """A 2D vertex in world pixel coordinates at reference zoom."""
 
     x: float
     y: float
@@ -62,23 +64,58 @@ class _Polygon:
 
 @dataclass(frozen=True)
 class _CellGeometry:
-    """Prepared geometry for one ENC cell."""
+    """Prepared geometry for one ENC cell.
+
+    Vertices and coverage envelope are in world pixel coordinates at
+    `reference_zoom`. Camera transforms are applied at render time via
+    QSGTransformNode.
+    """
 
     cell_path: str
     polygons: Tuple[_Polygon, ...]
     coverage_envelope: Tuple[
         float, float, float, float
-    ]  # minx, maxx, miny, maxy (scene pixels)
+    ]  # minx, maxx, miny, maxy (world pixels at reference_zoom)
     palette_colors: Dict[str, QColor]  # layer_name -> fill color
+    reference_zoom: float
+    reference_center_lat: float
+    reference_center_lon: float
+    reference_width: float
+    reference_height: float
 
 
-def _mercator_to_scene(
-    lat: float, lon: float, camera: MercatorProjection
+def _mercator_to_world_pixel(
+    lat: float, lon: float, zoom: float
 ) -> Tuple[float, float]:
-    """Convert geographic coordinates to scene pixels."""
-    x = camera._lon_to_x(lon)
-    y = camera._lat_to_y(lat)
+    """Convert geographic coordinates to world pixels at given zoom.
+
+    World pixels are in the global Mercator coordinate system at the
+    specified zoom level (not relative to any camera center).
+    """
+    n = 2.0**zoom
+    tile_n = n * MercatorProjection.TILE_SIZE
+    x = (lon + 180.0) / 360.0 * tile_n
+    lat = max(-MercatorProjection.MAX_LAT, min(MercatorProjection.MAX_LAT, lat))
+    lat_rad = math.radians(lat)
+    y = (
+        (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi)
+        / 2.0
+        * tile_n
+    )
     return (x, y)
+
+
+def _world_pixel_to_scene(
+    wx: float, wy: float, camera: MercatorProjection
+) -> Tuple[float, float]:
+    """Convert world pixel coordinates to scene coordinates for a camera."""
+    cx = camera._lon_to_x(camera._center_lon)
+    cy = camera._lat_to_y(camera._center_lat)
+    w = camera.get_allocated_width()
+    h = camera.get_allocated_height()
+    sx = wx - cx + w / 2.0
+    sy = wy - cy + h / 2.0
+    return (sx, sy)
 
 
 def _triangle_fan(outer_ring: _Ring) -> List[Tuple[_Vertex, _Vertex, _Vertex]]:
@@ -103,10 +140,8 @@ def _triangle_fan(outer_ring: _Ring) -> List[Tuple[_Vertex, _Vertex, _Vertex]]:
     return triangles
 
 
-def _build_polygons_from_ogr(
-    geometry, camera: MercatorProjection
-) -> Tuple[_Polygon, ...]:
-    """Extract polygons from OGR geometry, converting to scene coordinates.
+def _build_polygons_from_ogr(geometry, reference_zoom: float) -> Tuple[_Polygon, ...]:
+    """Extract polygons from OGR geometry, converting to world pixels at reference zoom.
 
     Only processes Polygon and MultiPolygon types. Returns outer rings only;
     inner rings (holes) are collected but not yet used for triangulation.
@@ -124,7 +159,8 @@ def _build_polygons_from_ogr(
             if len(points) < 3:
                 continue
             vertices = tuple(
-                _Vertex(*_mercator_to_scene(p[1], p[0], camera)) for p in points
+                _Vertex(*_mercator_to_world_pixel(p[1], p[0], reference_zoom))
+                for p in points
             )
             rings.append(_Ring(vertices))
         if rings:
@@ -154,7 +190,17 @@ def _prepare_cell_geometry(
 
     Runs on the worker thread. Uses PreparedCellStore to get the GDALVectorChart
     on an OGR Memory dataset, then iterates area layers and tessellates.
+
+    Geometry is built at the camera's current zoom as the reference zoom.
+    Vertices are stored in world pixel coordinates at that reference zoom.
     """
+    # Use the camera's zoom as the reference zoom for this geometry build
+    reference_zoom = camera._zoom
+    reference_center_lat = camera._center_lat
+    reference_center_lon = camera._center_lon
+    reference_width = camera.get_allocated_width()
+    reference_height = camera.get_allocated_height()
+
     chart = _open_prepared_chart(cell_path, palette, cache_dir, cancel)
     if chart is None:
         return None
@@ -170,16 +216,23 @@ def _prepare_cell_geometry(
         drawer = chart.drawer
 
         polygons, palette_colors = _collect_area_polygons(
-            vector_file, camera, drawer, palette_obj, cancel
+            vector_file, reference_zoom, drawer, palette_obj, cancel
         )
 
-        coverage_env = _compute_coverage_envelope(chart, camera)
+        coverage_env = _compute_coverage_envelope(
+            chart, reference_zoom, reference_center_lat, reference_center_lon
+        )
 
         return _CellGeometry(
             cell_path=cell_path,
             polygons=tuple(polygons),
             coverage_envelope=coverage_env,
             palette_colors=palette_colors,
+            reference_zoom=reference_zoom,
+            reference_center_lat=reference_center_lat,
+            reference_center_lon=reference_center_lon,
+            reference_width=reference_width,
+            reference_height=reference_height,
         )
     finally:
         _release_chart_vector_file(chart)
@@ -206,7 +259,7 @@ def _open_prepared_chart(
 
 def _collect_area_polygons(
     vector_file,
-    camera: MercatorProjection,
+    reference_zoom: float,
     drawer,
     palette_obj,
     cancel: Optional[callable],
@@ -244,7 +297,7 @@ def _collect_area_polygons(
             geom = feature.GetGeometryRef()
             if geom is None:
                 continue
-            cell_polygons = _build_polygons_from_ogr(geom, camera)
+            cell_polygons = _build_polygons_from_ogr(geom, reference_zoom)
             polygons.extend(cell_polygons)
 
             # Get fill color for this layer from palette
@@ -258,15 +311,18 @@ def _collect_area_polygons(
 
 
 def _compute_coverage_envelope(
-    chart, camera: MercatorProjection
+    chart,
+    reference_zoom: float,
+    reference_center_lat: float,
+    reference_center_lon: float,
 ) -> Tuple[float, float, float, float]:
-    """Compute coverage envelope in scene coordinates."""
+    """Compute coverage envelope in world pixel coordinates at reference zoom."""
     coverage_env = (0, 0, 0, 0)
     if chart._coverage:
         env = chart._coverage[0].GetEnvelope()
-        # Convert to scene coordinates
-        minx, miny = _mercator_to_scene(env[2], env[0], camera)
-        maxx, maxy = _mercator_to_scene(env[3], env[1], camera)
+        # Convert to world pixels at reference zoom
+        minx, miny = _mercator_to_world_pixel(env[2], env[0], reference_zoom)
+        maxx, maxy = _mercator_to_world_pixel(env[3], env[1], reference_zoom)
         coverage_env = (minx, maxx, miny, maxy)
     return coverage_env
 
@@ -282,8 +338,9 @@ def _release_chart_vector_file(chart) -> None:
 class ChartGeometryItem(QQuickItem):
     """QQuickItem that renders one ENC cell's area geometry as QSGGeometryNode.
 
-    Like WindItem in gpuscene.py: setFlag(ItemHasContents), updatePaintNode
-    builds/updates a QSGGeometryNode with triangle geometry.
+    Geometry is built once in world pixel coordinates at a reference zoom.
+    Camera pan/zoom updates only the QSGTransformNode matrix (scale + translate).
+    Zero vertex buffer upload on camera motion.
     """
 
     failed = Signal(str)
@@ -294,60 +351,157 @@ class ChartGeometryItem(QQuickItem):
         self._cell_geometry: Optional[_CellGeometry] = None
         self._camera: Optional[MercatorProjection] = None
         self._geometry_dirty = True
-        self._node: Optional[QSGGeometryNode] = None
+        self._transform_dirty = False
+        self._transform_node: Optional[QSGTransformNode] = None
+        self._geometry_node: Optional[QSGGeometryNode] = None
         self._geometry: Optional[QSGGeometry] = None
         self._material: Optional[QSGFlatColorMaterial] = None
+        # Reference camera parameters (from cell geometry at build time)
+        self._ref_zoom: float = 0.0
+        self._ref_center_lat: float = 0.0
+        self._ref_center_lon: float = 0.0
+        self._ref_width: float = 0.0
+        self._ref_height: float = 0.0
 
     def set_cell_geometry(self, cell_geometry: _CellGeometry):
         """Set the prepared cell geometry (from worker thread)."""
         self._cell_geometry = cell_geometry
+        # Store reference parameters for transform computation
+        self._ref_zoom = cell_geometry.reference_zoom
+        self._ref_center_lat = cell_geometry.reference_center_lat
+        self._ref_center_lon = cell_geometry.reference_center_lon
+        self._ref_width = cell_geometry.reference_width
+        self._ref_height = cell_geometry.reference_height
         self._geometry_dirty = True
+        self._transform_dirty = True  # Transform needs update for new reference
         self.update()
 
     def set_camera(self, camera: MercatorProjection):
         """Update camera for transform (called on GUI thread)."""
         self._camera = camera
-        # Geometry vertices are in scene coordinates; camera change = transform update
-        if self._node is not None:
-            self._update_node_transform()
+        if self._cell_geometry is not None and self._transform_node is not None:
+            # Compute and apply transform; mark only transform dirty
+            self._update_transform_node()
+            self._transform_dirty = True
+            self._geometry_dirty = False  # Explicitly NOT geometry dirty
             self.update()
 
-    def _update_node_transform(self):
-        """Update the node's transform matrix for the current camera."""
-        if self._node is None or self._camera is None:
+    def _update_transform_node(self):
+        """Compute and apply transform matrix for current camera vs reference."""
+        if self._transform_node is None or self._camera is None:
             return
-        # The geometry vertices are already in scene coordinates for the camera
-        # at build time. For pan/zoom, we apply a transform.
-        # But since we rebuild on zoom, for pan we just translate.
-        # For simplicity in P2.2.1: mark geometry dirty on any camera change.
-        self._geometry_dirty = True
+
+        cell_geom = self._cell_geometry
+        if cell_geom is None:
+            return
+
+        # Current camera parameters
+        cur_zoom = self._camera._zoom
+        cur_center_lat = self._camera._center_lat
+        cur_center_lon = self._camera._center_lon
+        cur_width = self._camera.get_allocated_width()
+        cur_height = self._camera.get_allocated_height()
+
+        # Scale factor: 2^(cur_zoom - ref_zoom)
+        scale = 2.0 ** (cur_zoom - self._ref_zoom)
+
+        # Current camera center in world pixels at current zoom
+        cur_cx = (
+            (cur_center_lon + 180.0)
+            / 360.0
+            * (2.0**cur_zoom)
+            * MercatorProjection.TILE_SIZE
+        )
+        cur_lat_rad = math.radians(
+            max(
+                -MercatorProjection.MAX_LAT,
+                min(MercatorProjection.MAX_LAT, cur_center_lat),
+            )
+        )
+        cur_cy = (
+            (
+                1.0
+                - math.log(math.tan(cur_lat_rad) + 1.0 / math.cos(cur_lat_rad))
+                / math.pi
+            )
+            / 2.0
+            * (2.0**cur_zoom)
+            * MercatorProjection.TILE_SIZE
+        )
+
+        # Transform: world pixels at ref_zoom -> screen pixels at current camera
+        # Vertex at ref_zoom: x_ref
+        # 1. Scale to cur_zoom world pixels: x_ref * scale
+        # 2. Convert to screen: x_ref * scale - cur_cx + cur_width/2
+        # Transform matrix: x' = scale * x + tx, where tx = -cur_cx + cur_width/2
+
+        tx = -cur_cx + cur_width / 2.0
+        ty = -cur_cy + cur_height / 2.0
+
+        transform = QTransform()
+        transform.scale(scale, scale)
+        transform.translate(tx, ty)  # Translation in screen space (after scaling)
+
+        self._transform_node.setMatrix(transform)
 
     def updatePaintNode(self, old_node: Optional[QSGNode], _):  # noqa: N802
         if self._cell_geometry is None:
             return None
 
         try:
-            node = old_node
-            if node is None:
-                node = QSGGeometryNode()
-                node.setFlag(QSGNode.Flag.OwnsGeometry)
-                node.setFlag(QSGNode.Flag.OwnsMaterial)
+            # Root node is a transform node; geometry node is its child
+            transform_node = old_node
+            geometry_node = None
 
+            if transform_node is None:
+                transform_node = QSGTransformNode()
+                geometry_node = QSGGeometryNode()
+                geometry_node.setFlag(QSGNode.Flag.OwnsGeometry)
+                geometry_node.setFlag(QSGNode.Flag.OwnsMaterial)
+                transform_node.appendChildNode(geometry_node)
+            else:
+                # Find the geometry child node
+                geometry_node = transform_node.firstChild()
+                if geometry_node is None or not isinstance(
+                    geometry_node, QSGGeometryNode
+                ):
+                    geometry_node = QSGGeometryNode()
+                    geometry_node.setFlag(QSGNode.Flag.OwnsGeometry)
+                    geometry_node.setFlag(QSGNode.Flag.OwnsMaterial)
+                    transform_node.appendChildNode(geometry_node)
+
+            self._transform_node = transform_node
+            self._geometry_node = geometry_node
+
+            # Rebuild geometry only if geometry is dirty (cell set change or coverage change)
             if self._geometry_dirty:
-                self._rebuild_geometry(node)
+                self._rebuild_geometry(geometry_node)
+                self._geometry_dirty = False
+                self._transform_dirty = (
+                    True  # Transform needs update after geometry rebuild
+                )
 
-            # Apply coverage scissor rect
+            # Update transform if dirty
+            if self._transform_dirty and self._camera is not None:
+                self._update_transform_node()
+                self._transform_dirty = False
+
+            # Apply coverage scissor rect on geometry node (in world pixel coords at ref zoom)
+            # The scissor rect is in the geometry node's coordinate space (reference world pixels)
             if self._cell_geometry.coverage_envelope != (0, 0, 0, 0):
                 minx, maxx, miny, maxy = self._cell_geometry.coverage_envelope
-                node.setClipRect(QRectF(minx, miny, maxx - minx, maxy - miny))
+                geometry_node.setClipRect(QRectF(minx, miny, maxx - minx, maxy - miny))
 
-            return node
+            return transform_node
         except Exception as exc:
             self.failed.emit(str(exc))
             return None
 
     def _rebuild_geometry(self, node: QSGGeometryNode):
-        """Build QSGGeometry from cell polygons (triangle fan triangulation)."""
+        """Build QSGGeometry from cell polygons (triangle fan triangulation).
+
+        Vertices are in world pixel coordinates at reference zoom.
+        """
         cell_geom = self._cell_geometry
         if cell_geom is None:
             return
@@ -381,7 +535,7 @@ class ChartGeometryItem(QQuickItem):
             self._material = QSGFlatColorMaterial()
             node.setMaterial(self._material)
 
-        # Write vertices
+        # Write vertices (in world pixel coordinates at reference zoom)
         geometry = node.geometry()
         geometry.allocate(vertex_count)
         vertex_data = geometry.vertexDataAsPoint2D()
@@ -393,7 +547,6 @@ class ChartGeometryItem(QQuickItem):
             vertex_data[base + 2].set(v3.x, v3.y)
 
         node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)
-        self._geometry_dirty = False
 
         # Use first color for whole node (simplified; per-polygon colors need separate nodes)
         if polygon_colors:
@@ -445,6 +598,7 @@ class ChartGeometryScene(QObject):
             camera=self._camera,
             cache_dir=self._cache_dir,
             on_ready=self._on_geometry_ready,
+            parent_item=self._parent_item,
         )
         self._worker_thread.start()
 
@@ -495,12 +649,14 @@ class _GeometryWorker:
         camera: Optional[MercatorProjection],
         cache_dir: str,
         on_ready: callable,
+        parent_item=None,
     ):
         self._cell_paths = cell_paths
         self._palette = palette
         self._camera = camera
         self._cache_dir = cache_dir
         self._on_ready = on_ready
+        self._parent_item = parent_item
         self._cancelled = False
         self._thread: Optional[Thread] = None
 
@@ -549,8 +705,12 @@ class _GeometryWorker:
         """Invoke the ready callback on the GUI thread."""
         from PySide6.QtCore import QMetaObject, Qt
 
-        QMetaObject.invokeMethod(
-            self._parent_item,
-            lambda: self._on_ready(geometries),
-            Qt.ConnectionType.QueuedConnection,
-        )
+        if self._parent_item is not None:
+            QMetaObject.invokeMethod(
+                self._parent_item,
+                lambda: self._on_ready(geometries),
+                Qt.ConnectionType.QueuedConnection,
+            )
+        else:
+            # Fallback: call directly (should not happen in normal operation)
+            self._on_ready(geometries)
