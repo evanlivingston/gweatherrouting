@@ -34,12 +34,15 @@ Item {
         y: root.imageY
         width: root.imageWidth
         height: root.imageHeight
-        transform: root.preview ? Scale {
+        transform: Scale {
             origin.x: root.imageWidth / 2
             origin.y: root.imageHeight / 2
-            xScale: root.previewScale
-            yScale: root.previewScale
-        } : null
+            // The preview is a scaled copy of the published composition; the
+            // published composition itself is shown unscaled.  The scale is
+            // always present: a Transform has no enabled state.
+            xScale: root.preview ? root.previewScale : 1
+            yScale: root.preview ? root.previewScale : 1
+        }
     }
     // The chart layer's own loading state, in the chart layer's own scene:
     // the weather's state is never shown for the chart.

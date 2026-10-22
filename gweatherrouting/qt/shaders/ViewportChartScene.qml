@@ -31,30 +31,19 @@ Item {
         anchors.fill: parent
         z: -1  // Behind the chart image
     }
-    Item {
+    // The chart layer is a ChartLayer, not a bare Item: it owns the
+    // published image, the preview transform and the chart's own loading
+    // state, and the viewport sets exactly those properties on it.  A bare
+    // Item has none of them, so the composition would be published into
+    // nowhere and the loading state would never clear.
+    ChartLayer {
         id: chart
         objectName: "chartLayer"
         anchors.fill: parent
     }
-    Rectangle {
-        id: status
-        objectName: "chartStatus"
-        visible: root.chartLoading
-        x: 8
-        y: 34
-        width: statusText.implicitWidth + 12
-        height: statusText.implicitHeight + 8
-        color: "#000000be"
-        Text {
-            id: statusText
-            anchors.centerIn: parent
-            color: "white"
-            text: "Chart loading…"
-        }
-    }
     // Application-owned MBTiles/weather background/marine stay above ENC,
     // below wind barbs. Standalone use leaves this image empty.
-    Item {
+    ChartLayer {
         objectName: "environmentLayer"
         anchors.fill: parent
     }
