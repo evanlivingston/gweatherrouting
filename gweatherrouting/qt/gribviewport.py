@@ -1525,8 +1525,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             url = cast(Any, self._chart_provider).publish(generation, image)
             cast(QObject, self._chart).setProperty("source", QUrl(url))
             # New composition published: clear preview state.
-            cast(QObject, self._chart).setProperty("chartPreview", False)
-            cast(QObject, self._chart).setProperty("chartPreviewScale", 1.0)
+            cast(QObject, self._chart).setProperty("preview", False)
+            cast(QObject, self._chart).setProperty("previewScale", 1.0)
             self._chart_preview = False
             self.counters["chart_publications"] += 1
             self._place_chart()
@@ -1864,9 +1864,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         time_changed = previous_chart_camera.stamp() != camera.stamp()
                         if zoom_diff != 0.0 or time_changed:
                             scale = 2.0**zoom_diff
-                            cast(QObject, self._chart).setProperty("chartPreview", True)
+                            cast(QObject, self._chart).setProperty("preview", True)
                             cast(QObject, self._chart).setProperty(
-                                "chartPreviewScale", scale
+                                "previewScale", scale
                             )
                             self._chart_preview = True
                         else:
