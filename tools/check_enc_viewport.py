@@ -1082,6 +1082,12 @@ def _behavior(report, widget, layer, deadline):  # noqa: C901 - four runtime che
         source = widget._chart.property("source")
         return source.toString() if hasattr(source, "toString") else str(source or "")
 
+    def chart_preview():
+        """Whether the shown chart is marked as a preview, not as current."""
+        if widget._chart is None:
+            return False
+        return bool(widget._chart.property("preview"))
+
     def weather_publications():
         counters = widget.publication_counters()
         return sum(
@@ -1137,7 +1143,15 @@ def _behavior(report, widget, layer, deadline):  # noqa: C901 - four runtime che
         release.clear()
         probe = replace(widget._camera, time=widget._camera.time + timedelta(hours=1))
         widget.set_camera(probe)
-        hidden_during_replacement = not chart_source()
+        # P2.1 keeps the retained composition on screen during a zoom or a
+        # forecast-time change, scaled and marked as a preview.  A stale
+        # chart is therefore hidden only when it is withdrawn or when it is
+        # marked as a preview: it must never be presented as current.
+        withdrawn_during_replacement = not chart_source()
+        preview_during_replacement = chart_preview()
+        hidden_during_replacement = withdrawn_during_replacement or (
+            preview_during_replacement
+        )
         _wait(entered.is_set, 10)
         superseded = layer.observations()["generation"]
         layer.request(probe, replace=True)
@@ -1151,12 +1165,18 @@ def _behavior(report, widget, layer, deadline):  # noqa: C901 - four runtime che
         report["behavior"]["superseded_generation"] = superseded
         report["behavior"]["published_generations"] = sorted(published)
         report["behavior"]["rejected_generations"] = sorted(rejected)
+        report["behavior"]["stale_withdrawn"] = withdrawn_during_replacement
+        report["behavior"]["stale_shown_as_preview"] = preview_during_replacement
+        report["behavior"]["settled_source"] = chart_source()
+        report["behavior"]["settled_preview"] = chart_preview()
         report["checks"]["stale_chart_hidden"] = bool(
             hidden_during_replacement
             and superseded in rejected
             and superseded not in published
             and newest is not None
             and chart_source().endswith(f"/{newest}")
+            # The settled chart is the current composition, not a preview.
+            and not chart_preview()
         )
         report["checks"]["latest_generation_only"] = bool(
             not (published & rejected)
