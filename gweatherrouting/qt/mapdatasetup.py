@@ -36,7 +36,9 @@ class MapDataController(QObject):
     def missing(self):
         charts = self.owner.charts
         return dict(
-            coastlines=charts.gshhsLayer is None, seamarks=charts.osmLayer is None
+            coastlines=charts.gshhsLayer is None,
+            seamarks=charts.osmLayer is None,
+            osm_coastlines=charts.osmCoastlinesLayer is None,
         )
 
     def start(self, kinds):
@@ -111,12 +113,20 @@ class MapDataSetup(QWidget):
         self.downloads = {}
         for kind, label in (
             ("coastlines", "World Coastlines"),
+            ("osm_coastlines", "OpenStreetMap coastlines"),
             ("seamarks", "OpenSeaMap"),
         ):
             button = QPushButton("Download " + label)
             button.clicked.connect(lambda _, kind=kind: controller.start((kind,)))
             layout.addWidget(button)
             self.downloads[kind] = button
+        attribution = QLabel(
+            "OpenStreetMap coastlines © OpenStreetMap contributors, "
+            '<a href="https://www.openstreetmap.org/copyright">ODbL</a>.'
+        )
+        attribution.setOpenExternalLinks(True)
+        attribution.setWordWrap(True)
+        layout.addWidget(attribution)
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
@@ -145,7 +155,11 @@ class MapDataSetup(QWidget):
             or controller.owner.polars.task.busy
         )
         for kind, button in self.downloads.items():
-            label = "World Coastlines" if kind == "coastlines" else "OpenSeaMap"
+            label = {
+                "coastlines": "World Coastlines",
+                "osm_coastlines": "OpenStreetMap coastlines",
+                "seamarks": "OpenSeaMap",
+            }[kind]
             button.setText(("Download " if missing[kind] else "Installed: ") + label)
             button.setEnabled(
                 missing[kind] and not blocked and not controller.task.closed

@@ -129,6 +129,12 @@ def test_app_supplies_basemap_inside_quick_before_weather(presenter):
     presenter._sync_active(None)
     widget.set_base.assert_called_once_with(base, base_target)
     widget.set_environment.assert_called_once_with(environment, environment_target)
+    widget._chart_model.set_chart_visibility.assert_called_once_with(
+        {
+            "chartWorldVisible": True,
+            "chartOSMCoastlinesVisible": False,
+        }
+    )
     assert canvas._base_cache is base_cache
     assert canvas._environment_cache is environment_cache
     calls = [entry[0] for entry in widget.mock_calls]
@@ -173,6 +179,52 @@ def test_all_points_uses_viewport_and_failure_stays_unavailable(presenter, monke
 def test_enc_only_worker_never_composes_the_standalone_coastline(tmp_path):
     layer = ViewportChartLayer((), tmp_path, enc_enabled=True, enc_only=True)
     assert layer._base_sources() == ()
+    layer.close()
+
+
+def test_desktop_base_sources_follow_world_and_osm_visibility(tmp_path):
+    from gweatherrouting.qt.gribviewportchart import base_sources
+
+    (tmp_path / "gshhs").mkdir()
+    osm_shape = tmp_path / "osm-coastlines" / "coastlines" / "lines.shp"
+    osm_shape.parent.mkdir(parents=True)
+    osm_shape.touch()
+
+    sources = base_sources(
+        tmp_path,
+        {"chartWorldVisible": True, "chartOSMCoastlinesVisible": True},
+    )
+    assert [source.kind for source in sources] == ["gshhs", "simple-overlay"]
+    assert sources[-1].path == str(osm_shape)
+
+    sources = base_sources(
+        tmp_path,
+        {"chartWorldVisible": False, "chartOSMCoastlinesVisible": True},
+    )
+    assert [source.kind for source in sources] == ["simple"]
+    assert sources[0].path == str(osm_shape)
+    assert (
+        base_sources(
+            tmp_path,
+            {"chartWorldVisible": False, "chartOSMCoastlinesVisible": False},
+        )
+        == ()
+    )
+
+
+def test_chart_visibility_change_withdraws_and_replaces_retained_chart(tmp_path):
+    layer = ViewportChartLayer((), tmp_path)
+    layer._sources = (object(),)
+    layer._published = (1, object(), {})
+    layer._payload_bytes = 100
+
+    assert layer.set_chart_visibility(
+        {"chartWorldVisible": False, "chartOSMCoastlinesVisible": True}
+    )
+    assert layer._sources is None
+    assert layer._published is None
+    assert layer._payload_bytes == 0
+    assert layer._replace_next
     layer.close()
 
 

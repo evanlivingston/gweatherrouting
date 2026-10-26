@@ -34,7 +34,8 @@ class SimpleChartDrawer(VectorChartDrawer):
         sea_style = Style.chart_palettes[self.palette].sea
         contourn_style = Style.chart_palettes[self.palette].shallow_sea
 
-        self.background_render(gpsmap, cr, sea_style)
+        if getattr(self, "paint_background", True):
+            self.background_render(gpsmap, cr, sea_style)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
 
         for i in range(vector_file.GetLayerCount()):
@@ -93,7 +94,12 @@ class SimpleChartDrawer(VectorChartDrawer):
     ):
         if geom is None or geom.IsEmpty():
             return
-        if geom.GetGeometryName() in ("MULTIPOLYGON", "GEOMETRYCOLLECTION"):
+        geometry_name = geom.GetGeometryName()
+        if geometry_name in (
+            "MULTIPOLYGON",
+            "MULTILINESTRING",
+            "GEOMETRYCOLLECTION",
+        ):
             for i in range(geom.GetGeometryCount()):
                 self.feature_render(
                     gpsmap,
@@ -105,6 +111,17 @@ class SimpleChartDrawer(VectorChartDrawer):
                     fill_style,
                     contourn_style,
                 )
+            return
+        if geometry_name in ("LINESTRING", "LINEARRING"):
+            xs, ys = self._geom_to_screen_batch(gpsmap, geom)
+            if xs is None:
+                return
+            cr.new_path()
+            cr.move_to(xs[0], ys[0])
+            for x, y in zip(xs[1:], ys[1:]):
+                cr.line_to(x, y)
+            stroke_style.apply(cr)
+            cr.stroke()
             return
         cr.new_path()
         for i in range(geom.GetGeometryCount()):

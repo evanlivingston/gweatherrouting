@@ -47,5 +47,6 @@ class SettingsManager(Storage):
         self.chartCM93Visible = True
         self.chartSeamarksVisible = True
         self.chartVectorVisible = True
+        self.chartOSMCoastlinesVisible = False
 
         self.load_or_save_default()

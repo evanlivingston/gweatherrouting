@@ -59,6 +59,9 @@ class TestChartClasses(unittest.TestCase):
             ),
             "cm93": vector("/cm93", CM93ChartDrawer),
             "seamarks": vector("/seamarks", OSMChartDrawer),
+            "osm-coastlines": SimpleNamespace(
+                path="/osm-coastlines/coastlines.shp", enabled=True
+            ),
             "vector": SimpleNamespace(path="other", enabled=True),
         }
         self.manager.charts = list(self.charts.values())
@@ -67,11 +70,28 @@ class TestChartClasses(unittest.TestCase):
         for kind, key, _ in CHART_CLASSES:
             with self.subTest(kind=kind):
                 self.assertEqual(chart_class(self.charts[kind]), kind)
-                self.assertTrue(self.settings[key])
+                self.assertEqual(self.settings[key], kind != "osm-coastlines")
         countries = SimpleNamespace(
             path=resource_path("gweatherrouting", "data/countries.geojson")
         )
         self.assertEqual(chart_class(countries), "world")
+        osm_coastline = SimpleNamespace(path="/data/osm-coastlines/coastlines.shp")
+        self.assertEqual(chart_class(osm_coastline), "osm-coastlines")
+        self.assertFalse(self.settings.chartOSMCoastlinesVisible)
+
+    def test_osm_coastline_visibility_is_independent(self):
+        chart = SimpleNamespace(
+            path="/data/osm-coastlines/coastlines.shp", enabled=True
+        )
+        self.manager.charts.append(chart)
+        self.assertFalse(self.settings.chartOSMCoastlinesVisible)
+        self.settings.chartOSMCoastlinesVisible = True
+        self.manager.do_draw(MapCanvas(), Mock())
+        self.assertIn(chart, self.manager._draw_base.call_args.args[2])
+        self.settings.chartOSMCoastlinesVisible = False
+        self.manager.do_draw(MapCanvas(), Mock())
+        self.assertNotIn(chart, self.manager._draw_base.call_args.args[2])
+        self.assertTrue(chart.enabled)
 
     def test_each_switch_filters_rendering_without_rewriting_file_flags(self):
         for kind, key, _ in CHART_CLASSES:
