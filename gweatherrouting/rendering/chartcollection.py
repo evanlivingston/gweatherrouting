@@ -220,6 +220,8 @@ class ChartCollection:
             if self.gshhsLayer and previous_coast is None:
                 self.gshhsLayer.force_downscale = True
         self._chart_surfaces.clear()
+        for canvas in self.maps:
+            getattr(canvas, "invalidate_chart_sources", canvas.queue_draw)()
 
     def load_vector_layer(self, path, metadata=None, enabled=True):
         logger.info("Loading vector chart %s", path)

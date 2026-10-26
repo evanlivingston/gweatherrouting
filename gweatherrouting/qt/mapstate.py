@@ -127,4 +127,9 @@ class MapStateMixin:
         """Apply explicit source switches even while a gesture preview is retained."""
         self._cancel_cursor()
         self._invalidate_base()
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        chart = getattr(widget, "_chart_model", None)
+        if chart is not None:
+            chart.invalidate_sources()
         self.queue_draw()

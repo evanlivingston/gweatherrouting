@@ -362,6 +362,18 @@ class WeatherPresenter(QObject):
             raise RuntimeError("ENC/weather viewport initialization failed")
         if widget._camera != camera:
             widget.set_camera(camera)
+        chart_model = getattr(widget, "_chart_model", None)
+        if chart_model is not None:
+            settings = self.canvas.controller.settings
+            if chart_model.set_chart_visibility(
+                {
+                    "chartWorldVisible": settings.get("chartWorldVisible", True),
+                    "chartOSMCoastlinesVisible": settings.get(
+                        "chartOSMCoastlinesVisible", False
+                    ),
+                }
+            ):
+                widget._chart_timer.start()
         widget.setGeometry(self.canvas.rect())
         foreground.setGeometry(self.canvas.rect())
         widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)

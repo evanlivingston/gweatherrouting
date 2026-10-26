@@ -34,7 +34,8 @@ class SimpleChartDrawer(VectorChartDrawer):
         sea_style = Style.chart_palettes[self.palette].sea
         contourn_style = Style.chart_palettes[self.palette].shallow_sea
 
-        self.background_render(gpsmap, cr, sea_style)
+        if getattr(self, "paint_background", True):
+            self.background_render(gpsmap, cr, sea_style)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
 
         for i in range(vector_file.GetLayerCount()):

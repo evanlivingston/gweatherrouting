@@ -144,7 +144,7 @@ def _countries():
     )
 
 
-def base_sources(data_dir):
+def base_sources(data_dir, visibility=None):
     """The application's base chart sources, described for the worker.
 
     The description is the application's own ``BaseSource``: the worker opens
@@ -154,32 +154,53 @@ def base_sources(data_dir):
     from gweatherrouting.qt.basecharts import BaseSource
     from gweatherrouting.common import resource_path
 
-    path = Path(data_dir) / "gshhs"
-    if path.is_dir():
-        return (
-            BaseSource(
-                "gshhs",
-                str(path),
-                False,
-                _countries(),
-                _INITIAL_TIMES,
-                id(path),
-            ),
+    visibility = visibility or {}
+    sources = []
+    if visibility.get("chartWorldVisible", True):
+        path = Path(data_dir) / "gshhs"
+        if path.is_dir():
+            sources.append(
+                BaseSource(
+                    "gshhs",
+                    str(path),
+                    False,
+                    _countries(),
+                    _INITIAL_TIMES,
+                    id(path),
+                )
+            )
+        else:
+            # Keep the bundled map as the world-layer fallback only.
+            fallback_path = Path(
+                resource_path("gweatherrouting", "data/countries.geojson")
+            )
+            if fallback_path.is_file():
+                sources.append(
+                    BaseSource(
+                        "simple",
+                        str(fallback_path),
+                        False,
+                        (),  # No countries for simple vector chart
+                        _INITIAL_TIMES,
+                        id(fallback_path),
+                    )
+                )
+
+    shape = _osm_coastline_shape(data_dir)
+    if visibility.get("chartOSMCoastlinesVisible", False) and shape is not None:
+        kind = (
+            "simple-overlay" if visibility.get("chartWorldVisible", True) else "simple"
         )
-    # Fallback to bundled low-detail map when GSHHS is absent
-    fallback_path = Path(resource_path("gweatherrouting", "data/countries.geojson"))
-    if not fallback_path.is_file():
-        return ()
-    return (
-        BaseSource(
-            "simple",
-            str(fallback_path),
-            False,
-            (),  # No countries for simple vector chart
-            _INITIAL_TIMES,
-            id(fallback_path),
-        ),
-    )
+        sources.append(BaseSource(kind, str(shape), generation=id(shape)))
+    return tuple(sources)
+
+
+def _osm_coastline_shape(data_dir):
+    coast_dir = Path(data_dir) / "osm-coastlines"
+    if not coast_dir.is_dir():
+        return None
+    shapes = sorted(path for path in coast_dir.rglob("*.shp") if path.is_file())
+    return shapes[0] if shapes else None
 
 
 def chart_placement(viewport, camera):
@@ -241,7 +262,7 @@ class _ChartComposer:
     def render(self, job, isobars=None, enc=None):
         import cairo
 
-        if self._sources:
+        if job.charts:
             surface = self._renderer._render(job)
         else:
             # No installed coastline: the layer composes the isobars alone,
@@ -318,7 +339,12 @@ class ViewportChartLayer:
         self._error = ""
         self._thread = None
         self._closed = False
-        self._sources = ()
+        self._sources = None
+        self._source_visibility = {
+            "chartWorldVisible": True,
+            "chartOSMCoastlinesVisible": False,
+        }
+        self._replace_next = False
         self._sampler = None
         self._sampler_sources: "tuple[DisplayWeatherSource, ...]" = ()
         self._composer_instance = None
@@ -394,29 +420,41 @@ class ViewportChartLayer:
         and state, for explicit visibility when no usable basemap source loads.
         """
         with self._condition:
-            if not self._basemap_available:
-                return "World basemap unavailable"
-            if not self._has_gshhs and self._has_fallback:
+            world_visible = self._source_visibility["chartWorldVisible"]
+            osm_visible = self._source_visibility["chartOSMCoastlinesVisible"]
+            if not world_visible and not osm_visible:
+                return "No world chart sources selected"
+            if world_visible and self._has_gshhs:
+                return ""
+            if world_visible and self._has_fallback:
                 return "World basemap: bundled low-detail map"
-            return ""  # Normal case: GSHHS is available
+            if osm_visible and self._has_osm:
+                return ""
+            if osm_visible and not world_visible:
+                return "OpenStreetMap coastlines not installed"
+            return self._basemap_error or "World basemap unavailable"
 
     def _check_basemap_sources(self, data_dir):
         """Check which basemap sources are available at the given data directory."""
         from gweatherrouting.common import resource_path
 
         gshhs_available = (Path(data_dir) / "gshhs").is_dir()
+        osm_available = _osm_coastline_shape(data_dir) is not None
         fallback_available = Path(
             resource_path("gweatherrouting", "data/countries.geojson")
         ).is_file()
         with self._condition:
             self._has_gshhs = gshhs_available
+            self._has_osm = osm_available
             self._has_fallback = bool(fallback_available)
-            self._basemap_available = gshhs_available or bool(fallback_available)
+            self._basemap_available = (
+                gshhs_available or osm_available or bool(fallback_available)
+            )
             if not self._basemap_available:
                 self._basemap_error = (
                     "World coastlines not installed and fallback unavailable"
                 )
-            elif not gshhs_available and fallback_available:
+            elif not gshhs_available and not osm_available and fallback_available:
                 self._basemap_error = (
                     "Using bundled low-detail map (GSHHS not installed)"
                 )
@@ -462,6 +500,8 @@ class ViewportChartLayer:
         with self._condition:
             if self._closed:
                 return None
+            replace = replace or self._replace_next
+            self._replace_next = False
             if self._sources_changed():
                 # The user's own manifest changed: the retained composition
                 # may no longer describe the user's cells, so it is withdrawn
@@ -472,6 +512,7 @@ class ViewportChartLayer:
             if self._basemap_sources_changed():
                 # The basemap sources changed: the retained composition
                 # may no longer be valid, so it is withdrawn.
+                self._sources = None
                 self._published = None
                 self._payload_bytes = 0
             reused = self._reuse(camera, replace)
@@ -502,6 +543,39 @@ class ViewportChartLayer:
         with self._condition:
             self._condition.notify_all()
         return generation
+
+    def set_chart_visibility(self, visibility):
+        """Adopt the active world/coastline source switches from app settings."""
+        selected = {
+            "chartWorldVisible": bool(visibility.get("chartWorldVisible", True)),
+            "chartOSMCoastlinesVisible": bool(
+                visibility.get("chartOSMCoastlinesVisible", False)
+            ),
+        }
+        with self._condition:
+            if selected == self._source_visibility:
+                return False
+            self._source_visibility = selected
+            self._sources = None
+            self._published = None
+            self._payload_bytes = 0
+            self._replace_next = True
+            for request in (self._pending, self._active):
+                if request is not None:
+                    request[2].set()
+            self._condition.notify_all()
+        return True
+
+    def invalidate_sources(self):
+        """Re-discover installed basemap files before the next composition."""
+        with self._condition:
+            self._sources = None
+            self._published = None
+            self._payload_bytes = 0
+            self._replace_next = True
+            for request in (self._pending, self._active):
+                if request is not None:
+                    request[2].set()
 
     def _reuse(self, camera, replace):
         """The generation that already serves this camera, if there is one.
@@ -572,6 +646,7 @@ class ViewportChartLayer:
         from gweatherrouting.common import resource_path
 
         current_gshhs = (self._data_dir / "gshhs").is_dir()
+        current_osm = _osm_coastline_shape(self._data_dir) is not None
         current_fallback = Path(
             resource_path("gweatherrouting", "data/countries.geojson")
         ).is_file()
@@ -579,6 +654,7 @@ class ViewportChartLayer:
         with self._condition:
             if (
                 current_gshhs == self._has_gshhs
+                and current_osm == self._has_osm
                 and current_fallback == self._has_fallback
             ):
                 return False
@@ -882,8 +958,8 @@ class ViewportChartLayer:
     def _base_sources(self):
         if self._enc_only:
             return ()
-        if not self._sources:
-            self._sources = base_sources(self._data_dir)
+        if self._sources is None:
+            self._sources = base_sources(self._data_dir, self._source_visibility)
         return self._sources
 
     def _view_moved(self, camera):

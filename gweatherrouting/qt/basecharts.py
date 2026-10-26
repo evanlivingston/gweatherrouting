@@ -149,19 +149,21 @@ class BaseChartRenderer(OverlayRenderer):
                 chart.force_downscale = source.downscale
                 chart.last_time = dict(source.initial_times)
                 chart.drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
-            elif source.kind == "simple":
+            elif source.kind in ("simple", "simple-overlay"):
                 # This is our fallback simple vector chart (e.g., bundled countries.geojson)
                 chart = GDALVectorChart.__new__(GDALVectorChart)
                 chart.vector_file = ogr.Open(source.path)
                 if chart.vector_file is None:
                     raise ValueError(f"Cannot open base chart {source.path}")
                 chart.drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
+                chart.drawer.paint_background = source.kind == "simple"
             else:
                 chart = GDALVectorChart.__new__(GDALVectorChart)
                 chart.vector_file = ogr.Open(source.path)
                 if chart.vector_file is None:
                     raise ValueError(f"Cannot open base chart {source.path}")
                 chart.drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
+                chart.drawer.paint_background = True
             if isinstance(chart.drawer, SimpleChartDrawer):
                 chart.drawer._shorelines = ShorelineGeometryCache()
             self._charts[source] = chart
