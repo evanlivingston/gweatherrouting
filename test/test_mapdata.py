@@ -141,6 +141,41 @@ class TestMapData(unittest.TestCase):
             self.assertEqual(dataset.GetLayer().GetFeatureCount(), 1)
         self.assertFalse(list(destination.glob(".map-download-*")))
 
+    def test_osm_coastlines_install_shapefile_and_sidecars(self):
+        shapes = self.path / "osm-source" / "coastlines"
+        shapes.mkdir(parents=True)
+        dataset = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(
+            str(shapes / "coastlines.shp")
+        )
+        layer = dataset.CreateLayer("coastlines", geom_type=ogr.wkbLineString)
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(ogr.CreateGeometryFromWkt("LINESTRING (-1 0, 1 0)"))
+        layer.CreateFeature(feature)
+        feature = layer = dataset = None
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for path in shapes.iterdir():
+                archive.write(path, f"coastlines/{path.name}")
+
+        destination = self.path / "installed"
+        with patch(
+            "gweatherrouting.core.mapdata.requests.get",
+            return_value=Response(buffer.getvalue(), len(buffer.getvalue())),
+        ):
+            installed, error = install_map_data(
+                ("osm_coastlines",), destination, Event(), lambda *a: None
+            )
+
+        self.assertEqual(installed, ("osm_coastlines",))
+        self.assertIsNone(error)
+        shp = destination / "osm-coastlines" / "coastlines.shp"
+        for suffix in (".shp", ".shx", ".dbf"):
+            self.assertTrue(shp.with_suffix(suffix).is_file())
+        opened = ogr.Open(str(shp))
+        self.assertIsNotNone(opened)
+        self.assertEqual(opened.GetLayer().GetFeatureCount(), 1)
+        self.assertFalse(list(destination.glob(".map-download-*")))
+
     def test_invalid_archive_keeps_previous_installation(self):
         (self.path / "gshhs").mkdir()
         old = self.path / "gshhs" / "previous"

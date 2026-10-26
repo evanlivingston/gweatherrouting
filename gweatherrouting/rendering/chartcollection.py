@@ -50,6 +50,7 @@ class ChartCollection:
         self.charts: List[ChartLayer] = []
         self.gshhsLayer: Optional[GSHHSVectorChart] = None
         self.osmLayer: Optional[GDALVectorChart] = None
+        self.osmCoastlinesLayer: Optional[GDALVectorChart] = None
         self.basemap_error = ""
         self.settings_manager: SettingsManager = settings_manager
         self.maps: List = []
@@ -140,6 +141,26 @@ class ChartCollection:
         """Load installed charts; downloading data belongs to the frontend."""
         self._load_base_gshhs()
         self._load_base_osm()
+        if self.osmCoastlinesLayer is None:
+            coast_dir = os.path.join(DATA_DIR, "osm-coastlines")
+            shapes = (
+                sorted(
+                    os.path.join(root, name)
+                    for root, _, files in os.walk(coast_dir)
+                    for name in files
+                    if name.lower().endswith(".shp")
+                )
+                if os.path.isdir(coast_dir)
+                else []
+            )
+            if shapes:
+                try:
+                    self.osmCoastlinesLayer = GDALVectorChart(
+                        shapes[0], self.settings_manager
+                    )
+                    self.charts.append(self.osmCoastlinesLayer)
+                except Exception as error:
+                    logger.warning("Unable to load OSM coastlines: %s", error)
         fallback = resource_path("gweatherrouting", "data/countries.geojson")
         if self.gshhsLayer is None and not any(c.path == fallback for c in self.charts):
             try:

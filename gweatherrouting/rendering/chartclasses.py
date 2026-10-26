@@ -12,6 +12,11 @@ from .vectordrawer.s57chartdrawer import S57ChartDrawer
 
 CHART_CLASSES = (
     ("world", "chartWorldVisible", "World map / coastlines"),
+    (
+        "osm-coastlines",
+        "chartOSMCoastlinesVisible",
+        "OpenStreetMap coastlines © contributors (ODbL)",
+    ),
     ("enc", "chartENCVisible", "Local ENC charts"),
     ("raster", "chartRasterVisible", "Raster charts (KAP / BSB / GeoTIFF)"),
     ("mbtiles", "chartMBTilesVisible", "Offline MBTiles charts"),
@@ -23,6 +28,8 @@ CLASS_SETTINGS = {kind: setting for kind, setting, _ in CHART_CLASSES}
 
 
 def chart_class(chart):
+    if getattr(chart, "path", "").lower().find("osm-coastlines") >= 0:
+        return "osm-coastlines"
     if isinstance(chart, GSHHSVectorChart) or getattr(
         chart, "path", None
     ) == resource_path("gweatherrouting", "data/countries.geojson"):

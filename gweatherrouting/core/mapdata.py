@@ -12,9 +12,17 @@ COASTLINES_URL = (
     "gshhs2.3.6/gshhg-shp-2.3.6.zip"
 )
 SEAMARKS_URL = "https://github.com/dakk/osm-seamarks/raw/master/seamarks.pbf"
+OSM_COASTLINES_URL = (
+    "https://osmdata.openstreetmap.de/download/coastlines-split-4326.zip"
+)
 DATASETS = {
     "coastlines": ("World coastlines (~140 MB)", COASTLINES_URL, "gshhs"),
     "seamarks": ("OpenSeaMap sea marks (~2 MB)", SEAMARKS_URL, "seamarks.pbf"),
+    "osm_coastlines": (
+        "OpenStreetMap coastlines",
+        OSM_COASTLINES_URL,
+        "osm-coastlines",
+    ),
 }
 
 
@@ -69,7 +77,9 @@ def unpack_coastlines(archive, staging, cancel):
                     if not chunk:
                         break
                     output.write(chunk)
-    roots = list(staging.rglob("GSHHS_shp"))
+        roots = list(staging.rglob("GSHHS_shp"))
+        if not roots:
+            return staging
     if len(roots) != 1:
         raise ValueError("The download does not contain world coastline data.")
     return roots[0].parent
@@ -79,15 +89,15 @@ def validate_data(kind, path, cancel):
     paths = (
         [path / "GSHHS_shp" / q / f"GSHHS_{q}_L1.shp" for q in "fhilc"]
         if kind == "coastlines"
-        else [path]
+        else [next(path.rglob("*.shp"))] if kind == "osm_coastlines" else [path]
     )
     for source in paths:
         check_cancel(cancel)
-        driver = "ESRI Shapefile" if kind == "coastlines" else "OSM"
+        driver = "ESRI Shapefile" if kind in ("coastlines", "osm_coastlines") else "OSM"
         dataset = ogr.GetDriverByName(driver).Open(str(source))
         if dataset is None or dataset.GetLayerCount() == 0:
             raise ValueError("Downloaded map data could not be opened: " + source.name)
-        if kind == "coastlines":
+        if kind in ("coastlines", "osm_coastlines"):
             for suffix in (".shp", ".shx", ".dbf"):
                 if not source.with_suffix(suffix).is_file():
                     raise ValueError("Downloaded coastline data is incomplete.")
@@ -101,7 +111,8 @@ def install_one(kind, directory, cancel, report):
     directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".map-download-", dir=directory) as temp:
         staging = Path(temp)
-        download = staging / ("coastlines.zip" if kind == "coastlines" else filename)
+        is_zip = kind in ("coastlines", "osm_coastlines")
+        download = staging / ("coastlines.zip" if is_zip else filename)
         download_file(
             url,
             download,
@@ -111,7 +122,7 @@ def install_one(kind, directory, cancel, report):
         report("Checking " + label, None)
         ready = (
             unpack_coastlines(download, staging / "unpacked", cancel)
-            if kind == "coastlines"
+            if is_zip
             else download
         )
         validate_data(kind, ready, cancel)
