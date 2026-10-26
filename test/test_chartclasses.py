@@ -59,6 +59,9 @@ class TestChartClasses(unittest.TestCase):
             ),
             "cm93": vector("/cm93", CM93ChartDrawer),
             "seamarks": vector("/seamarks", OSMChartDrawer),
+            "osm-coastlines": SimpleNamespace(
+                path="/osm-coastlines/coastlines.shp", enabled=True
+            ),
             "vector": SimpleNamespace(path="other", enabled=True),
         }
         self.manager.charts = list(self.charts.values())
@@ -67,7 +70,7 @@ class TestChartClasses(unittest.TestCase):
         for kind, key, _ in CHART_CLASSES:
             with self.subTest(kind=kind):
                 self.assertEqual(chart_class(self.charts[kind]), kind)
-                self.assertTrue(self.settings[key])
+                self.assertEqual(self.settings[key], kind != "osm-coastlines")
         countries = SimpleNamespace(
             path=resource_path("gweatherrouting", "data/countries.geojson")
         )

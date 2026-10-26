@@ -47,3 +47,35 @@ class TestCoastlineHoles(unittest.TestCase):
                 x, y = canvas.convert_geographic_to_screen(MapPoint(47.6, -121.8))
                 land = round(y) * surface.get_stride() + round(x) * 4
                 self.assertEqual(data[land : land + 4], bytes((0, 0, 255, 255)))
+
+
+class TestCoastlineLines(unittest.TestCase):
+    def test_linestring_and_multilinestring_are_stroked(self):
+        canvas = MapCanvas()
+        geometries = (
+            ogr.CreateGeometryFromWkt("LINESTRING(-122.8 47.6,-122.0 47.6)"),
+            ogr.CreateGeometryFromWkt(
+                "MULTILINESTRING((-122.8 47.6,-122.5 47.6),"
+                "(-122.5 47.6,-122.0 47.6))"
+            ),
+        )
+        center_x, center_y = canvas.convert_geographic_to_screen(MapPoint(47.6, -122.4))
+        for geometry in geometries:
+            with self.subTest(kind=geometry.GetGeometryName()):
+                surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
+                cr = cairo.Context(surface)
+                drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
+                drawer.feature_render(
+                    canvas,
+                    cr,
+                    geometry,
+                    None,
+                    None,
+                    CairoStyle(color=(1, 0, 0, 1), line_width=2),
+                    CairoStyle(color=(0, 0, 0, 0)),
+                    None,
+                )
+                surface.flush()
+                data = bytes(surface.get_data())
+                pixel = round(center_y) * surface.get_stride() + round(center_x) * 4
+                self.assertEqual(data[pixel + 2], 255)

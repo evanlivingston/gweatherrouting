@@ -113,7 +113,7 @@ class MapDataSetup(QWidget):
         self.downloads = {}
         for kind, label in (
             ("coastlines", "World Coastlines"),
-            ("osm_coastlines", "OpenStreetMap Coastlines (ODbL)"),
+            ("osm_coastlines", "OpenStreetMap coastlines"),
             ("seamarks", "OpenSeaMap"),
         ):
             button = QPushButton("Download " + label)
@@ -157,7 +157,7 @@ class MapDataSetup(QWidget):
         for kind, button in self.downloads.items():
             label = {
                 "coastlines": "World Coastlines",
-                "osm_coastlines": "OpenStreetMap Coastlines (ODbL)",
+                "osm_coastlines": "OpenStreetMap coastlines",
                 "seamarks": "OpenSeaMap",
             }[kind]
             button.setText(("Download " if missing[kind] else "Installed: ") + label)

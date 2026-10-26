@@ -168,7 +168,7 @@ class TestMapData(unittest.TestCase):
 
         self.assertEqual(installed, ("osm_coastlines",))
         self.assertIsNone(error)
-        shp = destination / "osm-coastlines" / "coastlines.shp"
+        shp = next((destination / "osm-coastlines").rglob("coastlines.shp"))
         for suffix in (".shp", ".shx", ".dbf"):
             self.assertTrue(shp.with_suffix(suffix).is_file())
         opened = ogr.Open(str(shp))

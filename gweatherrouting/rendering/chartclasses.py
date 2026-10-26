@@ -15,7 +15,7 @@ CHART_CLASSES = (
     (
         "osm-coastlines",
         "chartOSMCoastlinesVisible",
-        "OpenStreetMap coastlines © contributors (ODbL)",
+        "OpenStreetMap coastlines",
     ),
     ("enc", "chartENCVisible", "Local ENC charts"),
     ("raster", "chartRasterVisible", "Raster charts (KAP / BSB / GeoTIFF)"),
