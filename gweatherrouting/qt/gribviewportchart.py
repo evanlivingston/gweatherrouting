@@ -1,17 +1,18 @@
 """The viewport's chart layer: an independent generation of chart imagery.
 
-The chart layer is the *application's* chart composition, not a second one.
-The base chart is composed by ``BaseChartRenderer`` -- the application's own
-worker-side composition with private GDAL handles, the application's chart
-drawers and the application's palette -- the installed and enabled ENC cells
-are composed by the application's own ``ENCOverlayRenderer`` on the same
-cairo surface, and the mean-sea-level pressure contours are the
-application's own ``WindPainter.draw_isobars`` on that same surface.  No
-chart portrayal is re-implemented here.
+The default chart layer is the *application's* chart composition, not a second
+one. The base chart is composed by ``BaseChartRenderer`` -- the application's
+own worker-side composition with private GDAL handles, the application's chart
+drawers and palette -- the installed and enabled ENC cells are composed by the
+application's own ``ENCOverlayRenderer`` on the same cairo surface. The
+mean-sea-level pressure contours are the application's own
+``WindPainter.draw_isobars`` on that surface. The opt-in
+``GWR_ENC_RENDERER=tile57`` prototype instead uses Tile57's native C-ABI PNG
+renderer for the chart image; the default remains unchanged.
 
-The order is the application's own: the base chart first, the ENC second and
-the pressure contours last, so the ENC sits under the contours exactly as it
-sits under them in the application.
+The default order is the application's own: base chart, ENC, then pressure
+contours. The Tile57 prototype replaces the chart image and keeps pressure
+contours and the rest of the viewport's scene layers above it.
 
 What the layer adds is the viewport's *generation*.  The chart composition is
 its own pipeline with its own worker thread, its own state and its own cancel
@@ -37,6 +38,7 @@ with its own handles.  The ENC source reports its own states -- ``ready``,
 as an empty chart that reads as "there is no data here".
 """
 
+import os
 from pathlib import Path
 from threading import Condition, Event, Lock, Thread
 import time
@@ -332,6 +334,7 @@ class ViewportChartLayer:
         self._enc_enabled = bool(enc_enabled)
         self._enc_only = bool(enc_only)
         self._enc_source = None
+        self._tile57_renderer = None
         self._enc_state = "disabled" if not self._enc_enabled else "idle"
         self._enc_metadata = {}
         self._enc_stale = False
@@ -805,6 +808,10 @@ class ViewportChartLayer:
             self._enc_source.release()
             if self._closed:
                 self._enc_source = None
+        if self._tile57_renderer is not None:
+            self._tile57_renderer.release()
+            if self._closed:
+                self._tile57_renderer = None
 
     # --------------------------------------------------------- composition
     def _compose(self, camera, cancel):
@@ -845,7 +852,36 @@ class ViewportChartLayer:
                 self.counters["stale"] += 1
             self._outcome = "stale"
             return None, None
-        surface, enc = self._composer().render(job, columns, self._enc_composer())
+        if os.environ.get("GWR_ENC_RENDERER", "").lower() == "tile57":
+            try:
+                surface, enc = self._tile57_instance().render(viewport, self._dpr)
+                if surface is None:
+                    surface, enc = self._composer().render(job, columns, None)
+            except Exception as exc:
+                # Preserve a usable chart while exposing that the requested
+                # backend failed; never present the fallback as Tile57 output.
+                surface, enc = self._composer().render(
+                    job, columns, self._enc_composer()
+                )
+                enc = dict(enc or disabled_enc_metadata())
+                enc.update(
+                    backend="tile57",
+                    fallback=True,
+                    state="unavailable",
+                    reason="Tile57 render unavailable; using the application renderer",
+                    error=str(exc),
+                )
+        else:
+            surface, enc = self._composer().render(job, columns, self._enc_composer())
+        if os.environ.get("GWR_ENC_RENDERER", "").lower() == "tile57" and (
+            cancel.is_set() or self._view_moved(camera)
+        ):
+            # Tile57's C render call is synchronous and has no cancellation
+            # parameter. Discard its result if the requested view was replaced.
+            with self._condition:
+                self.counters["stale"] += 1
+            self._outcome = "stale"
+            return None, None
         if surface is None:
             return None, None
         image = _surface_image(surface, self._dpr)
@@ -878,6 +914,14 @@ class ViewportChartLayer:
 
             self._enc_source = ViewportEncSource(self._data_dir, self._palette)
         return self._enc_source
+
+    def _tile57_instance(self):
+        """The optional native Tile57 backend, owned by the chart worker."""
+        if self._tile57_renderer is None:
+            from gweatherrouting.qt.tile57viewport import Tile57ViewportRenderer
+
+            self._tile57_renderer = Tile57ViewportRenderer(self._data_dir)
+        return self._tile57_renderer
 
     def _base_sources(self):
         if self._enc_only:
