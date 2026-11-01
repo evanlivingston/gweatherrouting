@@ -924,6 +924,7 @@ def test_zoom_mask_reuse_keeps_the_existing_scale_boundaries(scale, quality):
 def _fill_scene():
     """A stand-in for the render context's scene, without a window."""
     from types import SimpleNamespace
+    from gweatherrouting.qt.viewportpublication import PublicationManager
 
     class Layer:
         def __init__(self):
@@ -945,6 +946,7 @@ def _fill_scene():
         ),
         _published=None,
         _published_fill=None,
+        _publication_manager=PublicationManager(),
         counters=dict(
             fill_publications=0,
             fill_uploads=0,
@@ -972,6 +974,7 @@ def _field():
     )
     return SimpleNamespace(
         generation="field-generation",
+        identity="field-identity",
         images=("u0", "v0", "u1", "v1"),
         staged=SimpleNamespace(weight=lambda stamp: 0.25),
         grid=SimpleNamespace(

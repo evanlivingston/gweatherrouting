@@ -424,6 +424,28 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     assert changed.call_count == 1
 
 
+def test_map_host_keeps_navigation_cache_for_camera_only_pan():
+    from gweatherrouting.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMapState,
+        ViewportMap,
+    )
+
+    camera_state = ViewportCameraState(48.0, -123.0, 8.0)
+    host = SimpleNamespace(
+        camera_state=camera_state,
+        _view_state=ViewportMapState(camera_state),
+        _cancel_cursor=Mock(),
+        invalidate_navigation=Mock(),
+        view_changed=SimpleNamespace(emit=Mock()),
+        _weather_presenter=SimpleNamespace(foreground=None),
+    )
+    camera = SimpleNamespace(center_lat=48.45, center_lon=-124.29, zoom=8.0)
+
+    assert ViewportMap.adopt_viewport_camera(host, camera)
+    host.invalidate_navigation.assert_not_called()
+
+
 def test_map_host_translates_app_state_to_the_viewport_camera_contract():
     from gweatherrouting.qt.gribviewport import ViewportCamera
     from gweatherrouting.qt.viewportmap import (
