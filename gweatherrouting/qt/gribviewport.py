@@ -1421,6 +1421,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_request_state = None
             self._chart_publish_state = None
             self._chart_pending = None
+            self._chart_attempt = 0
+            self._chart_redelivery_generation = None
+            self._chart_budget_refusal = None
             self._chart_visible_generation = None
             self._chart_front_slot = 0
             self._chart_loading_shown = False
@@ -1768,8 +1771,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def _publish_chart(self, payload):
             """Stage a composed image without disturbing the visible chart."""
             generation, image, metadata = payload
-            if self._disposed or not self._chart_payload_valid(generation, metadata):
+            if self._disposed:
                 return
+            if not self._chart_payload_valid(generation, metadata):
+                self._chart_redelivery_generation = generation
+                return
+            if self._chart_pending is not None and self._chart_pending[0] == generation:
+                return
+            if self._chart_visible_generation == generation:
+                return
+            budget = self._publication_manager.budget
+            signature = (
+                budget.current_usage[LayerRole.CHART],
+                budget.total_used(),
+                budget.layer_caps[LayerRole.CHART],
+                budget.global_cap,
+            )
+            if getattr(self, "_chart_budget_refusal", None) == (generation, signature):
+                return
+            self._chart_redelivery_generation = None
             if image.isNull():
                 self._chart_state_changed("unavailable")
                 return
@@ -1780,17 +1800,66 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 source_key=(generation, metadata.get("camera_hash", "")),
                 content_hash=str(image),
             )
-            token = str(generation)
-            if not self._publication_manager.stage_resources(
+            self._chart_attempt += 1
+            token = str(self._chart_attempt)
+            manager = self._publication_manager
+            size = image.sizeInBytes()
+            if not manager.stage_resources(
                 LayerRole.CHART,
                 identity,
                 LayerPlacement(),
                 {ResourceKind.IMAGE: image},
-                image.sizeInBytes(),
+                size,
                 completion_token=token,
             ):
-                self._chart_state_changed("unavailable")
-                return
+                layer = manager.layers[LayerRole.CHART]
+                budget = manager.budget
+                visible = layer.visible_budget_bytes
+                chart_used = budget.current_usage[LayerRole.CHART]
+                chart_cap = budget.layer_caps[LayerRole.CHART]
+                # Trade the front only when withdrawing it makes both caps fit.
+                fallback = (
+                    layer.visible is not None
+                    and visible > 0
+                    and (
+                        chart_used + size > chart_cap
+                        or budget.total_used() + size > budget.global_cap
+                    )
+                    and chart_used - visible + size <= chart_cap
+                    and budget.total_used() - visible + size <= budget.global_cap
+                )
+                if fallback:
+                    self._chart_state_changed("loading")
+                    self._clear_chart()
+                    if not self._chart_payload_valid(generation, metadata):
+                        self._chart_redelivery_generation = generation
+                        return
+                    self._chart_attempt += 1
+                    token = str(self._chart_attempt)
+                    staged = manager.stage_resources(
+                        LayerRole.CHART,
+                        identity,
+                        LayerPlacement(),
+                        {ResourceKind.IMAGE: image},
+                        size,
+                        completion_token=token,
+                    )
+                else:
+                    staged = False
+                if not staged:
+                    self._clear_chart()
+                    self._chart_state_changed("unavailable")
+                    self._chart_budget_refusal = (
+                        generation,
+                        (
+                            budget.current_usage[LayerRole.CHART],
+                            budget.total_used(),
+                            budget.layer_caps[LayerRole.CHART],
+                            budget.global_cap,
+                        ),
+                    )
+                    return
+            self._chart_budget_refusal = None
             slot = 1 - self._chart_front_slot
             self._chart_pending = (generation, metadata, slot, token)
             url = self._chart_provider.publish_retained(
@@ -1843,6 +1912,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             generation, metadata, _, _ = pending
             if not success or not self._chart_payload_valid(generation, metadata):
+                if success:
+                    self._chart_redelivery_generation = generation
                 self._reject_chart_pending()
                 if not success:
                     self._chart_state_changed("unavailable")
@@ -2200,7 +2271,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self.counters["chart_requests"] += 1
             self._chart_requested_after_weather = True
             self._chart_request_state = self._chart_state_now()
-            self._chart_model.request(self._camera)
+            generation = self._chart_model.request(self._camera)
+            refusal = getattr(self, "_chart_budget_refusal", None)
+            retry_refusal = False
+            if refusal is not None and refusal[0] == generation:
+                budget = self._publication_manager.budget
+                signature = (
+                    budget.current_usage[LayerRole.CHART],
+                    budget.total_used(),
+                    budget.layer_caps[LayerRole.CHART],
+                    budget.global_cap,
+                )
+                retry_refusal = refusal[1] != signature
+            if generation is not None and (
+                generation == self._chart_redelivery_generation or retry_refusal
+            ):
+                with self._chart_model._condition:
+                    payload = self._chart_model._published
+                    if payload is None or payload[0] != generation:
+                        payload = None
+                self._chart_redelivery_generation = None
+                if payload is not None:
+                    self._publish_chart(payload)
 
         def _chart_state_now(self):
             """The camera, the forecast time and the published weather."""

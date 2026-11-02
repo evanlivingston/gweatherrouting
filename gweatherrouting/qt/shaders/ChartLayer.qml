@@ -7,15 +7,16 @@ import QtQuick
 // generation that is still current.
 Item {
     id: root
-    property alias source: image.source
-    property alias slot0Source: image.source
-    property alias slot1Source: imageBack.source
+    property alias source: root.slot0Source
+    property url slot0Source
+    property url slot1Source
     property string slot0Token: ""
     property string slot1Token: ""
     property int frontSlot: 0
     signal slotResult(int slot, string token, bool success)
-    property bool ready: (frontSlot === 0 ? image.status : imageBack.status) === Image.Ready
-    property string sourceError: (frontSlot === 0 ? image.status : imageBack.status) === Image.Error ? "chart image unavailable" : ""
+    property int frontStatus: frontSlot === 0 ? (slot0.item ? slot0.item.status : Image.Null) : (slot1.item ? slot1.item.status : Image.Null)
+    property bool ready: frontStatus === Image.Ready
+    property string sourceError: frontStatus === Image.Error ? "chart image unavailable" : ""
     // The chart layer's own state: it never changes the weather's state.
     property bool chartLoading: false
     property bool chartUnavailable: false
@@ -26,32 +27,49 @@ Item {
     property real imageY: 0
     property real imageWidth: 0
     property real imageHeight: 0
-    Image {
-        id: image
-        visible: root.frontSlot === 0
-        smooth: false
-        cache: false
-        x: root.imageX
-        y: root.imageY
-        width: root.imageWidth
-        height: root.imageHeight
-        onStatusChanged: {
-            if (root.slot0Token && (status === Image.Ready || status === Image.Error))
-                root.slotResult(0, root.slot0Token, status === Image.Ready)
+    onSlot0SourceChanged: { slot0.active = false; slot0.active = slot0Source.toString() !== "" }
+    onSlot1SourceChanged: { slot1.active = false; slot1.active = slot1Source.toString() !== "" }
+    Component {
+        id: chartImage
+        Image {
+            property string attemptToken: ""
+            property int attemptSlot: -1
+            smooth: false
+            cache: false
+            onStatusChanged: {
+                if (attemptToken && (status === Image.Ready || status === Image.Error))
+                    root.slotResult(attemptSlot, attemptToken, status === Image.Ready)
+            }
         }
     }
-    Image {
-        id: imageBack
-        visible: root.frontSlot === 1
-        smooth: false
-        cache: false
+    Loader {
+        id: slot0
+        visible: root.frontSlot === 0
+        active: false
+        sourceComponent: chartImage
         x: root.imageX
         y: root.imageY
         width: root.imageWidth
         height: root.imageHeight
-        onStatusChanged: {
-            if (root.slot1Token && (status === Image.Ready || status === Image.Error))
-                root.slotResult(1, root.slot1Token, status === Image.Ready)
+        onLoaded: {
+            item.attemptSlot = 0
+            item.attemptToken = root.slot0Token
+            item.source = root.slot0Source
+        }
+    }
+    Loader {
+        id: slot1
+        visible: root.frontSlot === 1
+        active: false
+        sourceComponent: chartImage
+        x: root.imageX
+        y: root.imageY
+        width: root.imageWidth
+        height: root.imageHeight
+        onLoaded: {
+            item.attemptSlot = 1
+            item.attemptToken = root.slot1Token
+            item.source = root.slot1Source
         }
     }
     // The chart layer's own loading state, in the chart layer's own scene:
