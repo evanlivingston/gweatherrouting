@@ -12,7 +12,7 @@ import numpy as np
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtQml import QQmlComponent, QQmlEngine
-from PySide6.QtQuick import QQuickWindow
+from PySide6.QtQuick import QQuickWindow, QSGRendererInterface
 from PySide6.QtTest import QTest
 
 from gweatherrouting.qt.gribviewport import ViewportCamera, _viewport_widget_class
@@ -198,7 +198,13 @@ class TestStreamlineModel(unittest.TestCase):
 
     def test_presenter_selects_quick_style_without_muting_streamline_opacity(self):
         settings = SimpleNamespace(
-            chartPalette="dark", gribArrowOpacity=0.7, gribWindStyle="streamlines"
+            chartPalette="dark",
+            gribArrowOpacity=0.7,
+            gribWindStyle="streamlines",
+            gribWindGradient=False,
+            gribWindGradientOpacity=1.0,
+            gribWindGradientSmooth=False,
+            gribWindGradientLevels=10,
         )
         canvas, widget, presenter = Mock(), Mock(), Mock()
         canvas.controller.settings = settings
@@ -245,6 +251,7 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
             _streamline_settle=Mock(),
             _streamline_model=Mock(),
             _streamline_provider=Mock(),
+            _gpu_streamlines_error=None,
             _show_state=Mock(),
             _status=Mock(),
             _streamline_readiness_changed=Mock(),
@@ -459,9 +466,7 @@ class TestStreamlineShaderStructure(unittest.TestCase):
         self.assertIn("b - 5.0*direction", vertex)
         self.assertIn("2.5 : -2.5", vertex)
         self.assertIn("abs(marker - round(marker)) > 0.00001", fragment)
-        self.assertIn(
-            "Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml
-        )
+        self.assertIn("Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml)
         self.assertIn("required property var modelData", qml)
         self.assertIn("effect.status === ShaderEffect.Compiled", qml)
         self.assertIn("property vector2d cameraCenter", qml)
@@ -540,28 +545,35 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             )
             layer.setProperty("cameraZoom", 0)
             deadline = time.monotonic() + 2.0
-            while (
-                not layer.property("ready")
-                and not layer.property("shaderError")
-                and time.monotonic() < deadline
-            ):
+            pixels = window.grabWindow()
+            while time.monotonic() < deadline and not layer.property("shaderError"):
                 QTest.qWait(10)
                 self.app.processEvents()
-            self.assertTrue(
-                layer.property("ready"),
-                f"root error={layer.property('shaderError')!r}; "
-                f"{layer.property('batchDiagnostics')}",
-            )
+                pixels = window.grabWindow()
+                if not pixels.isNull():
+                    dpr = pixels.width() / window.width()
+                    if all(
+                        any(
+                            pixels.pixelColor(px, py).red() > 180
+                            and pixels.pixelColor(px, py).green() < 100
+                            for px in range(round((x - 1) * dpr), round((x + 2) * dpr))
+                            for py in range(round((y - 1) * dpr), round((y + 2) * dpr))
+                        )
+                        for x, y in ((96, 48), (96, 52))
+                    ):
+                        break
+            api, selected_api, backend = self._skip_software_renderer(window)
             self.assertFalse(
                 layer.property("shaderError"),
                 f"{layer.property('shaderError')!r}; "
                 f"{layer.property('batchDiagnostics')}",
             )
-            pixels = window.grabWindow()
-            if pixels.isNull():
-                self.skipTest(
-                    "This Qt platform does not support QQuickWindow framebuffer readback"
-                )
+            self.assertFalse(
+                pixels.isNull(),
+                f"No framebuffer within 2s; ready={layer.property('ready')!r}; "
+                f"{layer.property('batchDiagnostics')}; scene_errors={scene_errors}; "
+                f"api={api}, selected_api={selected_api}, backend={backend!r}",
+            )
             self.assertFalse(
                 scene_errors, f"Qt Quick scene graph errors: {scene_errors}"
             )
@@ -650,8 +662,9 @@ class TestStreamlineShaderPixels(unittest.TestCase):
         )
         try:
             layer.setParentItem(window.contentItem())
-            layer.setWidth(window.contentItem().width())
-            layer.setHeight(window.contentItem().height())
+            # The content item may not have been sized before the window is shown.
+            layer.setWidth(window.width())
+            layer.setHeight(window.height())
             window.show()
             self._pump()
             image_url, count = provider.publish(
@@ -674,23 +687,31 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             layer.setProperty("cameraCenter", QVector2D(0.5, 0.5))
             layer.setProperty("cameraZoom", 0)
             deadline = time.monotonic() + 2.0
-            while (
-                not layer.property("ready")
-                and not layer.property("shaderError")
-                and time.monotonic() < deadline
-            ):
+            pixels = window.grabWindow()
+            while time.monotonic() < deadline and not layer.property("shaderError"):
                 QTest.qWait(10)
                 self.app.processEvents()
-            self.assertTrue(
-                layer.property("ready"),
-                f"root error={layer.property('shaderError')!r}; {layer.property('batchDiagnostics')}",
-            )
+                pixels = window.grabWindow()
+                if not pixels.isNull():
+                    dpr = pixels.width() / window.width()
+                    if all(
+                        any(
+                            pixels.pixelColor(px, py).red() > 180
+                            and pixels.pixelColor(px, py).green() < 100
+                            for px in range(round((x - 1) * dpr), round((x + 2) * dpr))
+                            for py in range(round((y - 1) * dpr), round((y + 2) * dpr))
+                        )
+                        for x, y in ((96, 48), (96, 52))
+                    ):
+                        break
+            api, selected_api, backend = self._skip_software_renderer(window)
             self.assertFalse(layer.property("shaderError"))
-            pixels = window.grabWindow()
-            if pixels.isNull():
-                self.skipTest(
-                    "This Qt platform does not support QQuickWindow framebuffer readback"
-                )
+            self.assertFalse(
+                pixels.isNull(),
+                f"No framebuffer within 2s; ready={layer.property('ready')!r}; "
+                f"{layer.property('batchDiagnostics')}; scene_errors={scene_errors}; "
+                f"api={api}, selected_api={selected_api}, backend={backend!r}",
+            )
             self.assertFalse(
                 scene_errors, f"Qt Quick scene graph errors: {scene_errors}"
             )
@@ -718,6 +739,22 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             window.close()
             layer.deleteLater()
             engine.deleteLater()
+
+    def _skip_software_renderer(self, window):
+        # The renderer may not be selected immediately after show(); query it
+        # only after waiting for the scene graph and shader layer to initialize.
+        api = window.rendererInterface().graphicsApi()
+        selected_api = QQuickWindow.graphicsApi()
+        backend = QQuickWindow.sceneGraphBackend()
+        software = QSGRendererInterface.GraphicsApi.Software
+        unknown = QSGRendererInterface.GraphicsApi.Unknown
+        if api == software or (
+            api == unknown
+            and window.isSceneGraphInitialized()
+            and (selected_api == software or backend.lower() == "software")
+        ):
+            self.skipTest("Qt Quick software renderer does not support ShaderEffect")
+        return api, selected_api, backend
 
     def _pump(self):
         for _ in range(20):

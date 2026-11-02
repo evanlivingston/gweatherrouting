@@ -13,6 +13,7 @@ def canvas_for(source):
     return SimpleNamespace(
         controller=SimpleNamespace(
             settings=SimpleNamespace(gribArrowOnGround=True),
+            display_forecast=SimpleNamespace(sources=lambda: ()),
             core=SimpleNamespace(grib_manager=SimpleNamespace(gribs=[source])),
         ),
         width=lambda: 640,

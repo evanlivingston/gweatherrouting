@@ -19,7 +19,8 @@ class TestDayStrip(unittest.TestCase):
         from gweatherrouting.qt.forecasttimeline import DayStripWidget
 
         self.strip = DayStripWidget()
-        self.strip.resize(400, 56)
+        # The 400 pixel intervals place x=100, 200, and 300 at quarter points.
+        self.strip.resize(401, 56)
         self.strip.set_bounds(1000.0, 2000.0)
         self.stamps = []
         self.strip.time_selected.connect(self.stamps.append)

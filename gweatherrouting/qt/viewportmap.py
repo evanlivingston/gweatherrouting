@@ -47,6 +47,7 @@ class ViewportMapState:
     route_preview: tuple = ()
     offsets: tuple = ()
     position: float | None = None
+    race_boat_positions: tuple = ()
 
 
 class ViewportMap(
@@ -148,6 +149,7 @@ class ViewportMap(
 
             self.timeline = ForecastTimeline(controller, self)
             self.timeline.setAutoFillBackground(True)
+            self.timeline.expansion_changed.connect(self._layout_timeline)
             self._layout_timeline()
 
     def _layout_timeline(self):
@@ -366,6 +368,29 @@ class ViewportMap(
     @position.setter
     def position(self, value):
         self._view_state.position = value
+
+    @property
+    def race_boat_positions(self):
+        return self._view_state.race_boat_positions
+
+    @race_boat_positions.setter
+    def race_boat_positions(self, value):
+        self._view_state.race_boat_positions = tuple(
+            (
+                (float(item[0]), float(item[1]))
+                if isinstance(item, (list, tuple))
+                else tuple(item)
+            )
+            for item in (value or ())
+        )
+
+    @property
+    def race_positions(self):
+        return self.race_boat_positions
+
+    @race_positions.setter
+    def race_positions(self, value):
+        self.race_boat_positions = value
 
     @property
     def _center_lat(self):

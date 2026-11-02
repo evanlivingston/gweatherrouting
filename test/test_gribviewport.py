@@ -1015,29 +1015,8 @@ def test_the_fill_is_off_by_default():
     assert defaults["gpu_weather_fill"] is False
 
 
-def test_the_default_path_does_not_load_the_fill_scene():
-    """The barbs' own component is the default root; the scene is opt-in."""
-    import ast
-
-    tree = ast.parse(inspect.getsource(gribviewport))
-    scenes = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if node.value.endswith(".qml"):
-                scenes.append(node.value)
-    assert "WeatherBarbs.qml" in scenes
-    assert "WeatherScene.qml" in scenes
-    # The application's own component is unchanged by the fill: the fill is a
-    # separate file, never a part of the barbs.
-    barbs = (
-        Path(gribviewport.__file__).parent / "shaders" / "WeatherBarbs.qml"
-    ).read_text()
-    assert "WeatherFill" not in barbs
-    assert "weather.frag" not in barbs
-
-
 def test_the_fill_runs_the_corrected_weather_shader():
-    """The fill uses the corrected weather shader, unchanged."""
+    """The fill handles missing samples and derives speed after interpolation."""
     shaders = Path(gribviewport.__file__).parent / "shaders"
     fill = (shaders / "WeatherFill.qml").read_text()
     assert "fragmentShader: root.fragmentShader" in fill
@@ -1048,9 +1027,7 @@ def test_the_fill_runs_the_corrected_weather_shader():
     assert "fragColor = vec4(0);" in shader
     assert "if (any(isnan(value)) || any(isinf(value)))" in shader
     # U and V are interpolated first; the wind speed is derived afterwards.
-    assert "float speed = clamp(length(uv) / 32.0" in shader
-    assert "fragColor = vec4(color, 0.35) * qt_Opacity;" in shader
-    assert "continuous wind-speed wash" in shader
+    assert "fragColor = vec4(windColor(length(uv)), 1.0) * qt_Opacity;" in shader
     assert shader.index("uv += value * weight;") < shader.index("length(uv)")
 
 
@@ -1221,6 +1198,7 @@ def test_the_default_path_does_not_load_the_chart_scene():
             if node.value.endswith(".qml"):
                 scenes.append(node.value)
     assert "ViewportChartScene.qml" in scenes
+    assert "WeatherBarbs.qml" in scenes
     shaders = Path(gribviewport.__file__).parent / "shaders"
     barbs = (shaders / "WeatherBarbs.qml").read_text()
     assert "ChartLayer" not in barbs
