@@ -51,7 +51,6 @@ from gweatherrouting.qt.viewportpublication import (
     LayerPlacement,
     ResourceKind,
     PublicationManager,
-    PublicationBudget,
 )
 from gweatherrouting.qt.viewporttransform import (
     PanReference,

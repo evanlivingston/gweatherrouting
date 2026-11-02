@@ -9,7 +9,7 @@ rejects pending work in a single transaction.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 import threading
 
 
@@ -134,7 +134,6 @@ class PublicationBudget:
         }
 
     def can_allocate(self, role: str, bytes_needed: int) -> bool:
-        layer_cap = self.layer_caps.get(role, self.global_cap)
         return (
             self.current_usage[role] + bytes_needed
             <= self.layer_caps.get(role, self.global_cap)
