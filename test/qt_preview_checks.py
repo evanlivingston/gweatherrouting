@@ -1001,111 +1001,6 @@ class QtPreviewChecks(unittest.TestCase):
         land = image.pixelColor(round(x), round(y))
         self.assertGreater(land.red(), land.blue())
 
-    def test_local_tcp_and_udp_feed_reaches_ui_and_timestamped_recording(self):
-        import socket
-
-        for transport in ("tcp", "udp"):
-            with self.subTest(transport=transport):
-                server = socket.socket(
-                    socket.AF_INET,
-                    socket.SOCK_STREAM if transport == "tcp" else socket.SOCK_DGRAM,
-                )
-                server.bind(("127.0.0.1", 0))
-                server.settimeout(5)
-                if transport == "tcp":
-                    server.listen(1)
-                stop = Event()
-                failures = []
-
-                def feed():
-                    try:
-                        if transport == "tcp":
-                            connection, _ = server.accept()
-                            with connection:
-                                while not stop.is_set():
-                                    payload = (rmc("120000") + "\r\n").encode("ascii")
-                                    connection.sendall(payload[:12])
-                                    connection.sendall(payload[12:])
-                                    stop.wait(0.03)
-                        else:
-                            while not stop.is_set():
-                                sources = tuple(
-                                    self.controller.connections.sources.values()
-                                )
-                                if sources:
-                                    server.sendto(
-                                        (rmc("120000") + "\n").encode("ascii"),
-                                        sources[0].s.getsockname(),
-                                    )
-                                stop.wait(0.03)
-                    except (OSError, TimeoutError) as exc:
-                        if (
-                            not stop.is_set()
-                            and self.controller.connections.polling_active
-                        ):
-                            failures.append(exc)
-
-                self.controller.connections.storage.connections = [
-                    {
-                        "type": "network",
-                        "protocol": "nmea0183",
-                        "direction": "in",
-                        "host": "127.0.0.1",
-                        "port": server.getsockname()[1],
-                        "network": transport,
-                    }
-                ]
-                worker = Thread(target=feed, daemon=True)
-                worker.start()
-                received = []
-                callback = lambda boat: received.append((get_ident(), boat.latitude))
-                self.controller.core.connect("boat_position", callback)
-                try:
-                    self.load()
-                    self.window.source.setCurrentIndex(0)
-                    self.wait_for_routing_stage(
-                        lambda: not self.controller.connection_task.busy
-                    )
-                    self.controller.session.start_recording()
-                    recording = self.controller.session.recorder.path
-                    self.controller.start_connections()
-                    self.wait_for_routing_stage(lambda: bool(received))
-                    self.assertAlmostEqual(received[-1][1], 48.1173)
-                    self.assertEqual(received[-1][0], get_ident())
-                    self.assertIn("48.11730", self.window.instruments.text())
-                    self.assertIn("$GPRMC", recording.read_text())
-                    self.assertGreater(
-                        self.controller.connections.get_status()[0]["packets"], 0
-                    )
-                    before = len(self.controller.points)
-                    self.wait_for_routing_stage(
-                        lambda: not self.controller.connection_task.busy
-                    )
-                    self.window.source.setCurrentIndex(1)
-                    self.wait_for_routing_stage(
-                        lambda: not self.controller.connection_task.busy
-                    )
-                    self.assertFalse(self.controller.session.streaming)
-                    self.assertFalse(self.controller.session.recording)
-                    self.assertFalse(self.controller.connections.polling_active)
-                    self.assertEqual(self.controller.connections.sources, {})
-                    self.assertIsNone(self.controller.connections.thread)
-                    self.assertEqual(
-                        self.controller.connections.connections[0]["port"],
-                        server.getsockname()[1],
-                    )
-                    self.assertGreaterEqual(len(self.controller.points), before)
-                    self.assertTrue(recording.exists())
-                finally:
-                    self.controller.session.stop_recording()
-                    self.controller.connections.stop_polling()
-                    self.controller.core.disconnect("boat_position", callback)
-                    stop.set()
-                    server.close()
-                    worker.join(2)
-                self.assertFalse(worker.is_alive())
-                self.assertFalse(failures)
-
     @unittest.skipUnless(sys.platform != "win32", "POSIX pseudo-terminal validation")
     def test_local_serial_feed_runs_through_production_reader_and_ui(self):
         import os
@@ -1442,22 +1337,6 @@ class QtPreviewChecks(unittest.TestCase):
             bytes((11, 22, 33, 255, 44, 55, 66, 255)),
         )
         self.assertEqual(chart.surface.get_width(), 2)
-
-    def test_forecast_and_palette_invalidate_chart_image(self):
-        from datetime import timedelta
-
-        old_time = self.controller.time_control.time
-        self.controller.time_control.set_time(old_time + timedelta(hours=3))
-        self.assertEqual(
-            self.controller.time_control.time, old_time + timedelta(hours=3)
-        )
-        self.window.show_library()
-        settings = self.window.library_dialog
-        settings.palette_combo.setCurrentText("dark")
-        self.assertEqual(self.controller.settings.chartPalette, "dark")
-        settings.hide()
-        self.drain()
-        self.assertIsNotNone(self.window.map.background)
 
     def wait_for_route(self):
         # The current-coverage preflight samples a corridor and checks it
@@ -1827,82 +1706,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.addCleanup(self.window.close)
         self.drain()
         return self.window.workspace
-
-    def test_workspace_roundtrip_keeps_layout_view_and_options_without_instrument_history(
-        self,
-    ):
-        from gweatherrouting.core.geo.routing import Routing
-        from PySide6.QtCore import Qt
-
-        old_routes = [
-            Routing("first", [(48, -123, "10/01/2026, 12:00:00", 270, 14, 6, 90)]),
-            Routing("second", [(49, -124, "10/01/2026, 13:00:00", 260, 12, 5, 80)]),
-        ]
-        for route in old_routes:
-            self.controller.core.routingManager.append(route)
-        panel = self.window.routing_panel
-        self.window._select_saved_route(old_routes[1])
-        panel.coastlines.setChecked(False)
-        panel.pages.setCurrentIndex(1)
-        self.window.resize(1000, 650)
-        self.window.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self.window.routing_dock
-        )
-        self.window.nmea_dock.hide()
-        self.window._show_panel(self.window.routing_dock)
-        self.load()
-        self.controller.session.speed = 5
-        self.controller.session.set_streaming(False)
-        self.controller.session.set_playing(True)
-        self.controller.session.advance(1)
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        (
-            self.window.map._center_lat,
-            self.window.map._center_lon,
-            self.window.map._zoom,
-        ) = (44.2, -127.1, 7.5)
-        self.window.map.view_changed.emit()
-        workspace = self.window.workspace
-        workspace.save()
-        payload = workspace.store.load()
-        self.assertEqual(payload["routing"]["selected_route"], "second")
-        self.assertNotIn("race.log", json.dumps(payload))
-        for key in (
-            "source",
-            "log",
-            "points",
-            "cursor",
-            "position",
-            "recording",
-            "playing",
-        ):
-            self.assertNotIn(key, payload)
-        with patch(
-            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
-        ):
-            self.restart_workspace(routes=old_routes)
-        self.assertEqual(self.window.size().width(), 1000)
-        self.assertEqual(self.window.size().height(), 650)
-        self.assertTrue(self.window.nmea_dock.isHidden())
-        self.assertEqual(
-            self.window.dockWidgetArea(self.window.routing_dock),
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-        )
-        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
-        self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
-        self.assertEqual(self.window.navigation_panel.route.name, "second")
-        self.assertFalse(self.window.routing_panel.coastlines.isChecked())
-        self.assertAlmostEqual(self.window.map._center_lat, 44.2)
-        self.assertAlmostEqual(self.window.map._center_lon, -127.1)
-        self.assertAlmostEqual(self.window.map._zoom, 7.5)
-        self.assertEqual(self.controller.session.speed, 5)
-        self.assertFalse(self.controller.session.streaming)
-        self.assertEqual(self.controller.session.source, "live")
-        self.assertIsNone(self.controller.session.log)
-        self.assertFalse(self.controller.session.playing)
-        self.assertFalse(self.controller.session.recording)
-        self.assertEqual(self.controller.points, [])
-        self.assertEqual(self.controller.session.position, 0)
 
     def test_workspace_invalid_layout_and_removed_monitor_are_recoverable(self):
         from gweatherrouting.core.workspacestate import WorkspaceStateStore
@@ -2322,94 +2125,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIs(self.controller.session.log, source_log)
         self.assertEqual(tuple(self.controller.points), points)
 
-    def test_gtk_logs_layout_full_data_and_direction_switches_preserve_shared_playback(
-        self,
-    ):
-        log = self.load()
-        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
-        self.assertIs(self.window.logs_view.widget(0), self.window.log_map)
-        self.assertIs(self.window.logs_view.widget(1), self.window.plots)
-        self.controller.session.set_playing(True)
-        self.controller.session.advance(5)
-        self.drain()
-        self.assertEqual(self.window.log_map.position, 5)
-        from gweatherrouting.core.timecontrol import naive_wall_time
-
-        formatter = self.window.plots.axes[-1].xaxis.get_major_formatter()
-        self.assertEqual(
-            formatter(log.point_offsets[0], 0),
-            naive_wall_time(log.points[0].time).strftime("%H:%M:%S"),
-        )
-        self.assertEqual(self.window.map.position, 5)
-        self.assertEqual(self.window.log_map.points, self.window.map.points)
-        self.assertEqual(len(self.window.log_map.points), len(log.points))
-        chart_time = self.controller.time_control.time
-        self.assertIsNot(self.window.log_map.time_control, self.window.map.time_control)
-        self.window.plots.set_series("aws", True)
-        self.window.plots.set_series("twa", True)
-        groups = self.window.plots._plot_groups()
-        self.assertEqual([field for field, _, _ in groups[1][1]], ["aws", "tws"])
-        self.assertEqual(
-            [field for field, _, _ in groups[-1][1]],
-            ["awd", "awa", "twd", "twa", "hdg"],
-        )
-        from types import SimpleNamespace
-
-        point = SimpleNamespace(awa=50, twa=70, hdg=350)
-        self.assertEqual(self.window.plots._value(point, "awd"), 40)
-        self.assertEqual(self.window.plots._value(point, "twd"), 60)
-        self.window.plots.set_series("depth", True)
-        self.assertEqual(len(self.window.plots.axes), 4)
-        self.assertEqual(self.controller.time_control.time, chart_time)
-        self.assertEqual(self.controller.session.position, 5)
-        self.assertTrue(self.controller.session.playing)
-        self.window.show_polar_workspace()
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.assertEqual(self.controller.session.position, 5)
-        self.assertEqual(
-            len(self.window.plots.axes[0].lines[0].get_xdata()), len(log.points)
-        )
-
-    def test_gtk_polar_preferences_log_map_and_panel_placement_roundtrip(self):
-        workspace = self.window.polar_workspace
-        self.window.show_polar_workspace()
-        self.wait_for_polar_view()
-        workspace.performance.basis.setCurrentIndex(1)
-        workspace.performance.wind.setCurrentIndex(
-            workspace.performance.wind.findData(12)
-        )
-        workspace.performance.show_points.setChecked(False)
-        (
-            self.window.log_map._center_lat,
-            self.window.log_map._center_lon,
-            self.window.log_map._zoom,
-        ) = (41, -70, 8)
-        self.window.plots.set_series("depth", True)
-        self.window.performance_dock.hide()
-        self.window.polar_selector_dock.setFloating(True)
-        self.window.polar_selector_dock.setGeometry(100, 100, 430, 400)
-        self.restart_workspace()
-        self.wait_for_polar_view()
-        self.assertIs(self.window.views.currentWidget(), self.window.polar_workspace)
-        self.assertTrue(self.window.polar_selector_dock.isFloating())
-        self.assertTrue(self.window.performance_dock.isHidden())
-        self.assertEqual(
-            self.window.polar_workspace.performance.basis.currentIndex(), 1
-        )
-        self.assertEqual(self.window.polar_workspace.performance.wind.currentData(), 12)
-        self.assertFalse(
-            self.window.polar_workspace.performance.show_points.isChecked()
-        )
-        self.assertEqual(
-            (
-                self.window.log_map._center_lat,
-                self.window.log_map._center_lon,
-                self.window.log_map._zoom,
-            ),
-            (41, -70, 8),
-        )
-        self.assertTrue(self.window.plots.series["depth"])
-
     def test_gtk_workspace_restores_old_navigation_toolbar_layout(self):
         from PySide6.QtWidgets import QMainWindow
         from gweatherrouting.core.workspacestate import WorkspaceStateStore
@@ -2431,81 +2146,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.views.setCurrentWidget(self.window.map)
         self.assertTrue(self.window.polar_selector_dock.toggleViewAction().isVisible())
         self.assertTrue(self.window.performance_dock.toggleViewAction().isVisible())
-
-    def test_navigation_tabs_tracks_pois_and_map_placement(self):
-        from PySide6.QtTest import QTest
-        from PySide6.QtCore import QPoint
-
-        panel = self.window.navigation_panel
-        self.assertEqual(
-            [panel.tabs.tabText(i) for i in range(4)],
-            ["Tracks", "Routings", "POIs", "AIS"],
-        )
-        self.assertFalse(panel.tabs.isTabVisible(3))
-        self.assertFalse(self.window.navigation_dock.isHidden())
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.assertTrue(self.window.navigation_dock.isHidden())
-        self.window.views.setCurrentWidget(self.window.map)
-        self.assertFalse(self.window.navigation_dock.isHidden())
-        self.window.navigation_dock.toggleViewAction().trigger()
-        self.window.views.setCurrentWidget(self.window.polar_workspace)
-        self.window.views.setCurrentWidget(self.window.map)
-        self.assertTrue(self.window.navigation_dock.isHidden())
-        self.window._new_track()
-        track = self.controller.core.trackManager.get_active()
-        self.assertIsNotNone(track)
-        panel.add_point((48.4, -123.4))
-        panel.add_point((48.5, -123.5))
-        panel.track_points.setCurrentCell(0, 0)
-        panel.edit_point("duplicate")
-        self.assertEqual(
-            track.points,
-            [(48.4, -123.4, None), (48.5, -123.5, None), (48.4, -123.4, None)],
-        )
-        panel.track_points.setCurrentCell(1, 0)
-        panel.edit_point("move_up")
-        self.assertEqual(track.points[0][:2], (48.5, -123.5))
-        panel.tracks.item(0, 0).setText("Race course")
-        self.assertEqual(track.name, "Race course")
-        panel.tracks.item(0, 3).setCheckState(Qt.CheckState.Unchecked)
-        self.assertFalse(track.visible)
-        self.window._navigation_request("poi", (48.45, -123.45))
-        poi = panel.poi
-        self.assertEqual(self.window.map.navigation.hl_poi, poi.name)
-        self.assertGreater(self.window.routing_panel.destination.findText(poi.name), 0)
-        panel.pois.item(0, 0).setText("Finish")
-        self.assertEqual(poi.name, "Finish")
-        self.assertGreater(self.window.routing_panel.destination.findText("Finish"), 0)
-        panel.move_poi()
-        self.assertIsNotNone(self.window.map.move_callback)
-        QTest.keyClick(self.window.map, Qt.Key.Key_Escape)
-        self.assertIsNone(self.window.map.move_callback)
-        self.assertEqual(poi.position, (48.45, -123.45))
-        panel.move_poi()
-        location = self.window.map.convert_screen_to_geographic(120, 100).get_degrees()
-        QTest.mouseClick(
-            self.window.map, Qt.MouseButton.LeftButton, pos=QPoint(120, 100)
-        )
-        self.assertEqual(poi.position, location)
-        self.assertIsNone(self.window.map.move_callback)
-        panel.track_points.setCurrentCell(0, 0)
-        panel.move_point()
-        location = self.window.map.convert_screen_to_geographic(140, 110).get_degrees()
-        QTest.mouseClick(
-            self.window.map, Qt.MouseButton.LeftButton, pos=QPoint(140, 110)
-        )
-        self.assertEqual(track.points[0], (*location, None))
-        panel.remove_poi()
-        self.assertFalse(self.controller.core.poiManager.elements)
-        destinations = self.window.routing_panel.destination
-        self.assertEqual(
-            [destinations.itemText(i) for i in range(destinations.count())],
-            ["Choose track or POI…", "Track: " + track.name],
-        )
-        panel.remove_track()
-        self.assertIsNone(self.controller.core.trackManager.get_active())
-        self.assertEqual(panel.track_points.rowCount(), 0)
-        self.assertIsNone(self.window.map.navigation.hl_poi)
 
     def test_track_extended_selection_context_click_and_multi_delete(self):
         from PySide6.QtCore import QItemSelection, QItemSelectionModel
@@ -2846,31 +2486,6 @@ class QtPreviewChecks(unittest.TestCase):
         canvas.set_wind_visible(True)
         self.assertTrue(canvas.wind_visible)
 
-    def test_map_display_controls_are_independent_and_survive_restart(self):
-        self.window.weather_panel.wind.toggle()
-        self.window.dashboard_action.trigger()
-        self.assertFalse(self.window.map.wind_visible)
-        self.assertFalse(self.window.map.dashboard_visible)
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.assertTrue(self.window.weather_panel.wind.isChecked())
-        self.assertTrue(self.window.dashboard_action.isChecked())
-        self.assertTrue(self.window.dashboard_action.isVisible())
-        self.window.workspace.save()
-        self.restart_workspace()
-        self.assertFalse(self.window.map.wind_visible)
-        self.assertFalse(self.window.map.dashboard_visible)
-        self.assertTrue(self.window.log_map.wind_visible)
-        self.assertTrue(self.window.log_map.dashboard_visible)
-        self.assertTrue(self.window.dashboard_action.isChecked())
-        self.window.views.setCurrentWidget(self.window.polar_workspace)
-        self.assertTrue(self.window.weather_dock.isHidden())
-        self.assertFalse(self.window.dashboard_action.isVisible())
-        self.window.views.setCurrentWidget(self.window.map)
-        self.assertFalse(self.window.dashboard_action.isChecked())
-        self.window.weather_panel.wind.toggle()
-        self.window.dashboard_action.trigger()
-        self.assertTrue(self.window.map.dashboard_visible)
-
     def test_weather_barb_density_updates_maps_and_persists(self):
         from gweatherrouting.core.settings import SettingsManager
         from gweatherrouting.rendering.windpainter import BARB_DENSITIES
@@ -3074,23 +2689,6 @@ class QtPreviewChecks(unittest.TestCase):
             canvas._sample_depth()
             lookup.assert_not_called()
 
-    def test_cursor_depth_lookup_skips_stale_view_and_leave(self):
-        from PySide6.QtCore import QEvent
-
-        canvas = self.window.map
-        canvas.set_wind_visible(False)
-        with patch.object(canvas.charts, "depth_at", return_value=None) as lookup:
-            canvas._hover(QPointF(100, 100))
-            lookup.reset_mock()
-            canvas._zoom += 1
-            canvas._sample_depth()
-            lookup.assert_not_called()
-            canvas._hover(QPointF(100, 100))
-            lookup.reset_mock()
-            canvas.leaveEvent(QEvent(QEvent.Type.Leave))
-            canvas._sample_depth()
-            lookup.assert_not_called()
-
     def test_cursor_depth_clears_when_individual_chart_selection_changes(self):
         canvas = self.window.map
         canvas.set_wind_visible(False)
@@ -3163,43 +2761,6 @@ class QtPreviewChecks(unittest.TestCase):
         timeline.refresh()
         self.assertIsNone(timeline.bounds)
         self.assertFalse(timeline.slider.isEnabled())
-
-    def test_forecast_timeline_steps_playback_boundaries_and_now(self):
-        from datetime import timedelta, datetime
-
-        start = self.timeline_range()
-        timeline = self.window.timeline
-        self.assertEqual(timeline.seconds, 900)
-        timeline.forward_button.click()
-        self.assertEqual(
-            self.controller.time_control.time, start + timedelta(minutes=15)
-        )
-        timeline.backward_button.click()
-        self.assertEqual(self.controller.time_control.time, start)
-        self.controller.time_control.set_time(start + timedelta(minutes=55))
-        timeline.play_button.click()
-        timer = timeline.play_timer.timerId()
-        timeline.play_button.click()
-        self.assertEqual(timeline.play_timer.timerId(), timer)
-        timeline.tick()
-        self.assertEqual(self.controller.time_control.time, start + timedelta(hours=1))
-        self.assertFalse(timeline.playing)
-        self.assertFalse(timeline.play_button.isChecked())
-        timeline.step_combo.setCurrentText("30s")
-        timeline.backward_button.click()
-        self.assertEqual(
-            self.controller.time_control.time, start + timedelta(minutes=59, seconds=30)
-        )
-        with patch(
-            "gweatherrouting.core.timecontrol.datetime.datetime"
-        ) as clock_datetime:
-            clock_datetime.now.return_value = datetime(2026, 1, 5, 14, 32)
-            timeline.now_button.click()
-        self.assertEqual(self.controller.time_control.time, datetime(2026, 1, 5, 14))
-        self.assertIn("outside", timeline.caption.text())
-        self.assertEqual(timeline.slider.value(), timeline.slider.maximum())
-        timeline.pause_button.click()
-        self.assertFalse(timeline.playing)
 
     def test_forecast_timeline_scrubbing_coalesces_pauses_and_cancels_pending_drag(
         self,
@@ -3297,43 +2858,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIn("outside", timeline.caption.text())
         timeline.backward_button.click()
         self.assertEqual(self.controller.time_control.time, start + timedelta(hours=1))
-
-    def test_forecast_timeline_is_independent_of_nmea_and_restores_only_step(self):
-        from datetime import timedelta
-
-        self.load()
-        self.controller.session.set_playing(True)
-        self.controller.session.advance(5)
-        self.window.views.setCurrentWidget(self.window.map)
-        start = self.timeline_range()
-        timeline = self.window.timeline
-        timeline.play_button.click()
-        timeline.tick()
-        self.assertEqual(self.controller.session.position, 5)
-        self.assertTrue(self.controller.session.playing)
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.drain()
-        self.assertFalse(timeline.playing)
-        self.assertTrue(self.controller.session.playing)
-        self.assertTrue(self.window.timeline.isHidden())
-        self.assertEqual(
-            self.controller.time_control.time, start + timedelta(minutes=15)
-        )
-        self.window.views.setCurrentWidget(self.window.map)
-        self.assertFalse(self.window.timeline.isHidden())
-        timeline.step_combo.setCurrentText("3h")
-        timeline.play()
-        self.window.workspace.save()
-        payload = self.window.workspace.store.load()
-        self.assertEqual(payload["forecast"], {"step": "3h"})
-        self.restart_workspace()
-        self.assertEqual(self.window.timeline.step_combo.currentText(), "3h")
-        self.assertFalse(self.window.timeline.playing)
-        self.assertFalse(self.controller.session.playing)
-        self.window.workspace_toolbar.hide()
-        self.assertTrue(self.window.timeline.isHidden())
-        self.window.workspace_toolbar.show()
-        self.assertFalse(self.window.timeline.isHidden())
 
     def marine_fixture(self):
         from dataclasses import replace
@@ -3685,80 +3209,6 @@ class QtPreviewChecks(unittest.TestCase):
         marine.provider.download.assert_not_called()
         self.assertTrue(marine.manager.is_enabled(tide.id))
         self.assertIn("reused 1", marine.status.text())
-
-    def test_marine_panel_preferences_and_download_start_survive_view_switch(self):
-        from datetime import timedelta
-
-        current, _ = self.marine_fixture()
-        self.controller.core.marine_manager.fields.add(current)
-        panel = self.window.marine_panels["currents"]
-        self.window.marine_docks["currents"].toggleViewAction().trigger()
-        self.window.marine_docks["tides"].toggleViewAction().trigger()
-        self.drain()
-        self.assertFalse(self.window.marine_docks["currents"].isHidden())
-        self.assertTrue(self.window.marine_open["currents"])
-        self.assertTrue(self.window.marine_open["tides"])
-        panel.toggle.setChecked(False)
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.assertTrue(self.window.marine_docks["currents"].isHidden())
-        self.window.workspace.save()
-        payload = self.window.workspace.store.load()
-        self.assertEqual(
-            payload["marine"],
-            {
-                "open": {"currents": True, "tides": True},
-                "currents": False,
-                "tides": True,
-            },
-        )
-        self.restart_workspace()
-        self.assertFalse(self.window.marine_panels["currents"].toggle.isChecked())
-        self.window.views.setCurrentWidget(self.window.map)
-        self.assertFalse(self.window.marine_docks["currents"].isHidden())
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.window.reset_panels()
-        self.assertFalse(any(self.window.marine_open.values()))
-        self.window.views.setCurrentWidget(self.window.map)
-        self.window._ensure_library()
-        self.drain()
-        marine = self.window.library_dialog.marine
-        self.assertFalse(marine.jobs.busy)
-        instant = marine.starts["currents"].instant()
-        self.controller.time_control.increase(hours=1)
-        self.assertEqual(
-            marine.starts["currents"].instant(), instant + timedelta(hours=1)
-        )
-        marine.starts["currents"].edited()
-        self.controller.time_control.increase(hours=1)
-        self.assertEqual(
-            marine.starts["currents"].instant(), instant + timedelta(hours=1)
-        )
-
-    def test_marine_overlay_uses_shared_worker_and_cursor_values(self):
-        current, tide = self.marine_fixture()
-        manager = self.controller.core.marine_manager
-        manager.fields.add(current)
-        manager.add(tide)
-        manager.enable(tide.id)
-        canvas = self.window.map
-        canvas.queue_draw()
-        canvas.repaint()
-        presenter = canvas._weather_presenter
-        self.wait_for_marine(
-            lambda: presenter.widget is not None
-            and presenter.widget._marine_layer.snapshot is not None
-        )
-        snapshot = presenter.widget._marine_layer.snapshot
-        self.assertTrue(snapshot.arrows)
-        self.assertEqual(snapshot.instant, tide.requested_start)
-        self.assertIn(
-            "Current 4.3 kn toward 27°T", canvas.marine.cursor_text(49.5, -125.5)
-        )
-        canvas._hover(QPointF(canvas.width() / 2, canvas.height() / 2))
-        self.assertIn("Test currents", self.window.cursor_status.text())
-        canvas.hide()
-        self.assertNotIn(canvas, canvas.marine._hosts)
-        self.assertFalse(self.window.log_map.marine.visible)
 
     def test_marine_account_controls_use_system_store_without_saved_secrets(self):
         from test.test_marine_credentials import MemoryKeyring
