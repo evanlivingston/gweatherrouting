@@ -13,8 +13,18 @@ from gweatherrouting.qt.navigationpanel import NavigationPanel
 
 class _Tracks(list):
     def __init__(self, *tracks):
-        super().__init__(tracks)
-        self.active = tracks[0] if tracks else None
+        super().__init__(track for track in tracks if track is not None)
+        for track in self:
+            track.collection = self
+        self.active = self[0] if self else None
+
+    def save(self):
+        pass
+
+    def new_element(self, points):
+        track = Track("New", points, collection=self)
+        self.append(track)
+        return track
 
     def get_active(self):
         return self.active
@@ -44,6 +54,18 @@ class _Panel:
 
     def refresh_points(self):
         pass
+
+    def _invalidate_race_geometry(self):
+        NavigationPanel._invalidate_race_geometry(self)
+
+    def _set_track_editing(self, editing):
+        NavigationPanel._set_track_editing(self, editing)
+
+    def select_track(self):
+        NavigationPanel.select_track(self)
+
+    def new_track(self):
+        return NavigationPanel.new_track(self)
 
 
 def test_track_select_edit_escape_and_race_track_restriction(qtbot):
@@ -130,18 +152,12 @@ def test_add_point_requires_edit_mode_for_existing_tracks(qtbot):
 
 def _new_track_panel():
     panel = _Panel(None)
-    manager = panel.core.trackManager
-    manager.new_element = lambda points: Track("New", points)
     panel.status = SimpleNamespace(setText=lambda text: None)
     panel.tabs = SimpleNamespace(setCurrentIndex=lambda index: None)
     panel.canvas._weather_presenter = SimpleNamespace(
         invalidate_race_geometry=lambda: None
     )
     panel.canvas.invalidate_race_geometry = lambda: None
-    panel._set_track_editing = lambda enabled: setattr(
-        panel.canvas.navigation, "edit_track", manager.get_active() if enabled else None
-    )
-    panel._invalidate_race_geometry = lambda: None
     return panel
 
 
@@ -186,7 +202,7 @@ def test_context_click_preserves_multiselection_and_selects_unselected_row(qtbot
     table.setItem(0, 0, QTableWidgetItem("one"))
     table.setItem(1, 0, QTableWidgetItem("two"))
     table.selectRow(0)
-    table.selectRow(1)
+    table.item(1, 0).setSelected(True)
     NavigationPanel._select_context_item(table, table.item(0, 0))
     assert {item.row() for item in table.selectedItems()} == {0, 1}
     NavigationPanel._select_context_item(table, table.item(1, 0))
@@ -203,6 +219,7 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
     race = Track("Race", [(3, 4, None)], race_track=True)
     manager = _Tracks(ordinary, race)
     buttons = [QPushButton(), QPushButton()]
+    buttons[1].setEnabled(False)
     canvas = SimpleNamespace(
         navigation=SimpleNamespace(edit_track=None, hl_track_item=None),
         invalidate_race_geometry=lambda: None,
@@ -217,6 +234,9 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
         point_index=-1,
         refresh_points=lambda: None,
         _invalidate_race_geometry=lambda: None,
+        _set_track_editing=lambda enabled: NavigationPanel._set_track_editing(
+            panel, enabled
+        ),
         _select_track=lambda row: NavigationPanel._select_track(panel, row),
         edit_track=lambda: NavigationPanel.edit_track(panel),
     )
@@ -239,6 +259,11 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
     assert buttons[1].isEnabled()
 
     race_cell = table.visualItemRect(table.item(1, 0)).center()
+    QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=race_cell)
+    QApplication.processEvents()
+    assert manager.get_active() is race
+    assert canvas.navigation.edit_track is None
+    assert not buttons[1].isEnabled()
     QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=race_cell)
     QApplication.processEvents()
     assert manager.get_active() is race
@@ -258,7 +283,9 @@ def test_only_edited_track_gets_point_handle_circles():
         Track("Second", [(3, 4, None)]),
     ]
     renderer = NavigationRenderer(
-        SimpleNamespace(trackManager=TrackManager(tracks), poiManager=[], routingManager=[])
+        SimpleNamespace(
+            trackManager=TrackManager(tracks), poiManager=[], routingManager=[]
+        )
     )
     renderer.edit_track = tracks[1]
 
@@ -276,7 +303,7 @@ def test_only_edited_track_gets_point_handle_circles():
 
     class GpsMap:
         def convert_geographic_to_screen(self, point):
-            return point
+            return point.get_degrees()
 
     renderer.draw_navigation(GpsMap(), cr)
     assert cr.arcs == [(3.0, 4.0, 5)]

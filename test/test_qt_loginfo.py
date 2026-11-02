@@ -190,6 +190,7 @@ def test_nmea_panel_has_library_not_direct_load_or_file_info(app, tmp_path):
     window.show_log_library = lambda: None
     window._track_source_changed = lambda _index: None
     window._record = lambda _active: None
+    window._toggle_instruments = lambda _enabled: None
     panel = PreviewWindow._nmea_panel(window)
     try:
         buttons = {button.text() for button in panel.findChildren(QPushButton)}

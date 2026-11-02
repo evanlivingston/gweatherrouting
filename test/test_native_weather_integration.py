@@ -205,6 +205,8 @@ def test_native_weather_swap_keeps_front_until_pending_layers_are_ready():
         _native_contexts=contexts,
         _provider=SimpleNamespace(pin_selection=pinned.append),
         _wind_opacity=0.88,
+        _wind_gradient_enabled=True,
+        _wind_gradient_opacity=0.85,
         _wind_style="barbs",
         _disposed=False,
         _camera="new time",

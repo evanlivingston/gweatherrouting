@@ -8,14 +8,16 @@ def test_position_append_does_not_traverse_existing_positions(monkeypatch):
 
     class ExistingPosition(RacePosition):
         def __getattribute__(self, name):
-            if name == "_boats":
+            if name == "_boats" and self.__dict__.get("guarded", False):
                 raise AssertionError("existing position was traversed")
             return super().__getattribute__(name)
 
     # Populate before guarding access: each append must only register the new
     # position, not inspect all previously tracked entries.
     for index in range(8):
-        boat.positions.append(ExistingPosition())
+        position = ExistingPosition()
+        boat.positions.append(position)
+        position.guarded = True
 
 
 def test_equal_boats_keep_separate_position_invalidation_registrations():

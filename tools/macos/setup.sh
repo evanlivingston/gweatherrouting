@@ -32,6 +32,7 @@ python -m pip install --no-build-isolation "GDAL[numpy]==${GDAL_VERSION}"
 # its build tool first so the editable install below can resolve it.
 python -m pip install meson-python ninja
 python -m pip install --no-build-isolation --editable .
+python -m pip install pytest parameterized pytest-qt pyais
 
 echo "Setup complete. Activate the environment with: source .venv/bin/activate"
 echo "Then start the app with: gweatherrouting"

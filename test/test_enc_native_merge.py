@@ -15,8 +15,10 @@ def test_factory_gets_both_enc_and_native_options(presenter, monkeypatch):
     factory = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
     monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
-    monkeypatch.setattr(presenter, "_model", lambda source: Mock())
+    model_factory = Mock(return_value=Mock())
+    monkeypatch.setattr(presenter, "_model", model_factory)
     presenter._create(None)
+    model_factory.assert_called_once_with(None, grid=True)
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
     assert kwargs["chart_palette"] == "dark"
