@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
-    QMenu,
     QProgressBar,
     QPushButton,
     QTabWidget,
@@ -26,6 +25,7 @@ from .theme import section_label
 from .chartlayerspanel import ChartLayersPanel
 from .mapdatasetup import MapDataSetup
 from gweatherrouting.rendering.style import Style
+
 
 def table(headers):
     widget = QTableWidget(0, len(headers))
@@ -89,6 +89,7 @@ class DataLibrary(QDialog):
         layout.addWidget(self.tabs)
         self.mutations = []
         self._forecasts()
+        self._history()
         self._charts()
         self._marine()
         self.progress = QProgressBar()
@@ -217,6 +218,12 @@ class DataLibrary(QDialog):
         layout.addWidget(self.available_charts, 2)
         self.chart_sections.addTab(downloads, "Downloads & base maps")
         self.tabs.addTab(self.charts_page, "Charts")
+
+    def _history(self):
+        from .era5download import Era5DownloadTab
+
+        self.history = Era5DownloadTab(self.controller, self.capture_region, self)
+        self.tabs.addTab(self.history, "History")
 
     def show_charts(self, section=0):
         self.tabs.setCurrentWidget(self.charts_page)

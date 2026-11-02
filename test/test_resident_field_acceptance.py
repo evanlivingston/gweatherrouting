@@ -31,7 +31,13 @@ def test_source_retirement_clears_barb_and_fill_qml_bindings():
 
     barbs, fill = Item(), Item()
     _viewport_widget_class()._clear_weather_sources(
-        SimpleNamespace(_barbs=barbs, _fill=fill, _native_weather_fields=False)
+        SimpleNamespace(
+            _barbs=barbs,
+            _barbs_back=None,
+            _fill=fill,
+            _fill_back=None,
+            _native_weather_fields=False,
+        )
     )
     assert set(barbs.values) == {
         "u0Source",

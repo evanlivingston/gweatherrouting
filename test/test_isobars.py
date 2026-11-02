@@ -16,6 +16,10 @@ from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
 
 
+class _Viewport(SimpleNamespace):
+    __hash__ = object.__hash__
+
+
 def make_grib(path, with_pressure=True):
     """6x5 grid with a spatial pressure gradient so contours exist."""
     bands = [(0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)]
@@ -164,7 +168,7 @@ class TestPressureLoading(unittest.TestCase):
             get_pressure=lambda *_: new_points if source is new else old_points
         )
         job = SimpleNamespace(
-            viewport=SimpleNamespace(
+            viewport=_Viewport(
                 get_bbox=lambda: (
                     SimpleNamespace(get_degrees=lambda: (-1, -1)),
                     SimpleNamespace(get_degrees=lambda: (2, 2)),
@@ -191,7 +195,7 @@ class TestPressureLoading(unittest.TestCase):
         renderer._load_wind = Mock(side_effect=AssertionError("Wind disabled"))
         renderer._load_pressure = Mock(return_value=pressure_columns())
         job = SimpleNamespace(
-            viewport=SimpleNamespace(width=300, height=200),
+            viewport=_Viewport(width=300, height=200),
             palette=(datetime(2026, 1, 1), 0.4, False, True, False, 8, 0.6, False),
             cancel=Event(),
             factor=1,
@@ -310,7 +314,7 @@ class TestMixedGridIsobars(unittest.TestCase):
         )
         defaults.update(viewport)
         return SimpleNamespace(
-            viewport=SimpleNamespace(**defaults),
+            viewport=_Viewport(**defaults),
             charts=((self.coarse,), (self.fine,)),
             palette=(datetime(2026, 1, 1, 1), 0.4, False, True, False, 4.0, 0.85, True),
             cancel=Event(),

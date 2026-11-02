@@ -20,7 +20,12 @@ from gweatherrouting.rendering.chartcollection import ChartCollection
 def presenter(monkeypatch):
     app = QApplication.instance() or QApplication([])
     canvas = QWidget()
-    settings = SimpleNamespace(gribWindStyle="barbs", chartPalette="dark")
+    settings = SimpleNamespace(
+        gribWindStyle="barbs",
+        gribWindGradient=False,
+        gribBarbDensity="standard",
+        chartPalette="dark",
+    )
     settings.get = lambda key, default=None: (
         "viewport" if key == "weatherRenderer" else default
     )
@@ -1101,6 +1106,7 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
         _nav_key=Mock(return_value="key"),
         _navigation_image=Mock(return_value=image),
         _paint_dashboard=Mock(),
+        _paint_measurement_overlay=Mock(),
         _paint_route_overlay=Mock(),
         _paint_track_overlay=Mock(),
         _paint_caption=Mock(),
@@ -1113,6 +1119,7 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
     )
     widget.set_navigation_overlay.assert_called_once_with(image, target)
     host._paint_dashboard.assert_called_once_with(painter)
+    host._paint_measurement_overlay.assert_called_once_with(painter)
     host._paint_route_overlay.assert_not_called()
     host._paint_track_overlay.assert_not_called()
     host._paint_caption.assert_not_called()

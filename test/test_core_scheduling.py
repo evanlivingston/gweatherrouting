@@ -13,7 +13,6 @@ class TestCoreScheduling(unittest.TestCase):
         for target in (
             "gweatherrouting.core.storage.Storage.load_or_save_default",
             "gweatherrouting.core.storage.Storage.save",
-            "gweatherrouting.core.gribmanager.GribManager.refresh_local_gribs",
             "gweatherrouting.core.polarmanager.PolarManager.refresh_local_polars",
         ):
             mock = patch(target)
