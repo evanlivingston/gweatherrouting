@@ -68,11 +68,13 @@ Item {
                     objectName: "weatherFill"
                     anchors.fill: parent
                     visible: root.fillEnabled
+                    fragmentShader: Qt.resolvedUrl("weather-fill-front.frag.qsb")
                 }
                 WeatherFill {
                     objectName: "weatherFillBack"
                     anchors.fill: parent
                     visible: false
+                    fragmentShader: Qt.resolvedUrl("weather-fill-back.frag.qsb")
                 }
                 WeatherBarbs {
                     id: barbs
