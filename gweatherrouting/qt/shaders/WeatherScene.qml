@@ -31,4 +31,19 @@ Item {
         visible: false
     }
     WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
+    // Stationary clip container for synthetic markers and future explicit
+    // migration. Opt-in only: nothing is reparented here yet, so existing
+    // geographic layers and overlays keep their parents and z.
+    Item {
+        objectName: "mapClip"
+        anchors.fill: root
+        clip: true
+        Item {
+            objectName: "mapContent"
+            x: 0
+            y: 0
+            width: parent.width
+            height: parent.height
+        }
+    }
 }

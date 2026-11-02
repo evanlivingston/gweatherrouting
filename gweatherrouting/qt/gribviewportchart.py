@@ -851,6 +851,7 @@ class ViewportChartLayer:
         image = _surface_image(surface, self._dpr)
         metadata = {
             "viewport": viewport,
+            "camera": camera,
             "time": camera.stamp(),
             "factor": self._dpr,
             "enc": enc if enc is not None else disabled_enc_metadata(),

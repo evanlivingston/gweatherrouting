@@ -180,6 +180,8 @@ def test_pending_native_binding_does_not_mutate_visible_layer():
 
 
 def test_native_weather_swap_keeps_front_until_pending_layers_are_ready():
+    from gweatherrouting.qt.viewportpublication import PublicationManager
+
     cls = _viewport_widget_class()
     front, back = Layer(), Layer()
     front_fill, back_fill = Layer(), Layer()
@@ -204,10 +206,11 @@ def test_native_weather_swap_keeps_front_until_pending_layers_are_ready():
         _weather_display_camera="old time",
         _native_contexts=contexts,
         _provider=SimpleNamespace(pin_selection=pinned.append),
+        _publication_manager=PublicationManager(),
         _wind_opacity=0.88,
-        _wind_gradient_enabled=True,
-        _wind_gradient_opacity=0.85,
         _wind_style="barbs",
+        _wind_gradient_enabled=True,
+        _wind_gradient_opacity=0.12,
         _disposed=False,
         _camera="new time",
         _model=SimpleNamespace(state="ready"),
