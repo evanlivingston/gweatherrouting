@@ -51,7 +51,6 @@ from gweatherrouting.qt.viewportpublication import (
     LayerPlacement,
     ResourceKind,
     PublicationManager,
-    PublicationBudget,
 )
 from gweatherrouting.qt.viewporttransform import (
     PanReference,
@@ -1748,11 +1747,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             cast(QObject, self._chart).setProperty("source", QUrl(url))
             self.counters["chart_publications"] += 1
             # Stage chart through PublicationManager
-            placement = LayerPlacement()
-            resources = {ResourceKind.IMAGE: [image]}
-            budget_bytes = (
-                image.sizeInBytes() if hasattr(image, "sizeInBytes") else 1024 * 1024
-            )
             identity = LayerIdentity(
                 role=LayerRole.CHART,
                 generation=generation,
@@ -3408,7 +3402,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
             # PublicationManager observes staging, but does not gate existing
             # weather publication.
-            placement = LayerPlacement()
             resources = {ResourceKind.IMAGE: field.images}
             budget_bytes = sum(
                 size()
