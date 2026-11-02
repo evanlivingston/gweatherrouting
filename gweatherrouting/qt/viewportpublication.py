@@ -63,10 +63,27 @@ class LayerState:
     visible: Any = None
     pending: Any = None
     placement: "LayerPlacement" = field(default_factory=lambda: LayerPlacement())
+    pending_placement: Optional["LayerPlacement"] = None
     resources: dict = field(default_factory=dict)
+    visible_resources: dict = field(default_factory=dict)
     native_ready: bool = False
     native_frame_observed: bool = False
-    budget_bytes: int = 0
+    visible_budget_bytes: int = 0
+    pending_budget_bytes: int = 0
+    completion_token: Any = None
+
+    @property
+    def budget_bytes(self) -> int:
+        """Compatibility view of the currently staged or visible reservation."""
+        return self.pending_budget_bytes or self.visible_budget_bytes
+
+    @budget_bytes.setter
+    def budget_bytes(self, value: int) -> None:
+        # Preserve legacy direct state setup; manager accounting uses ownership fields.
+        if self.pending is not None:
+            self.pending_budget_bytes = value
+        else:
+            self.visible_budget_bytes = value
 
     def is_stale(self, current_generation: int) -> bool:
         if self.visible is None:
@@ -78,11 +95,20 @@ class LayerState:
 
     def clear_pending(self) -> None:
         self.pending = None
+        self.pending_placement = None
 
     def commit_pending(self) -> None:
         if self.pending is not None:
             self.visible = self.pending
             self.pending = None
+            if self.pending_placement is not None:
+                self.placement = self.pending_placement
+            self.pending_placement = None
+            self.completion_token = None
+            self.visible_resources = self.resources
+            self.resources = {}
+            self.visible_budget_bytes = self.pending_budget_bytes
+            self.pending_budget_bytes = 0
 
 
 class PublicationBudget:
@@ -156,51 +182,101 @@ class PublicationManager:
         }
 
     def stage_resources(
-        self, role: str, identity, placement, resources, budget_bytes: int
+        self,
+        role: str,
+        identity,
+        placement,
+        resources,
+        budget_bytes: int,
+        completion_token=None,
     ) -> bool:
         """Stage resources for a layer; returns False if budget exceeded."""
         with self._lock:
-            if not self.budget.allocate(role, budget_bytes):
-                return False
             layer = self.layers[role]
+            old_budget = layer.pending_budget_bytes if layer.pending is not None else 0
+            delta = budget_bytes - old_budget
+            if delta >= 0:
+                if not self.budget.allocate(role, delta):
+                    return False
+            else:
+                self.budget.release(role, -delta)
+            layer.pending_budget_bytes = budget_bytes
             layer.pending = identity
-            layer.placement = placement
+            layer.completion_token = completion_token
+            layer.pending_placement = placement
             layer.resources = resources
-            layer.budget_bytes = budget_bytes
-            layer.native_ready = False
-            layer.native_frame_observed = False
+            if layer.visible is None:
+                layer.native_ready = False
+                layer.native_frame_observed = False
             return True
 
-    def verify_and_adopt(self, role, verify_fn) -> tuple[bool, str]:
+    def verify_and_adopt(
+        self, role, verify_fn, expected_token=None
+    ) -> tuple[bool, str]:
         """Verify staged resources and adopt as visible if ready."""
         with self._lock:
             layer = self.layers[role]
             if layer.pending is None:
                 return False, "no pending resources"
+            if expected_token is not None and layer.completion_token != expected_token:
+                return False, "stale completion"
             if not verify_fn(layer.resources):
-                self.budget.release(role, layer.budget_bytes)
-                layer.pending = None
-                layer.resources.clear()
-                layer.budget_bytes = 0
+                self._dispose_pending(role, layer)
                 return False, "verification failed"
             # Adopt
+            self.budget.release(role, layer.visible_budget_bytes)
             layer.visible = layer.pending
+            if layer.pending_placement is not None:
+                layer.placement = layer.pending_placement
+            layer.pending_placement = None
+            layer.visible_resources = layer.resources
+            layer.resources = {}
             layer.pending = None
+            layer.visible_budget_bytes = layer.pending_budget_bytes
+            layer.pending_budget_bytes = 0
+            layer.completion_token = None
             layer.native_ready = True
             layer.native_frame_observed = True
             return True, "adopted"
 
-    def reject_pending(self, role: str) -> None:
+    def commit_pending(self, role, expected_token=None) -> tuple[bool, str]:
+        """Adopt staged resources under the manager lock without extra checks."""
+        return self.verify_and_adopt(role, lambda _: True, expected_token)
+
+    def reject_pending(self, role: str, expected_token=None) -> None:
         """Reject staged resources and release budget."""
         with self._lock:
             layer = self.layers[role]
-            if layer.pending is not None:
-                self.budget.release(role, layer.budget_bytes)
-                layer.pending = None
-                layer.resources.clear()
-                layer.budget_bytes = 0
-                layer.native_ready = False
-                layer.native_frame_observed = False
+            if layer.pending is not None and (
+                expected_token is None or layer.completion_token == expected_token
+            ):
+                self._dispose_pending(role, layer)
+                if layer.visible is None:
+                    layer.native_ready = False
+                    layer.native_frame_observed = False
+
+    def withdraw_visible(self, role: str) -> None:
+        """Retire a scene-withdrawn front even if its data generation matches.
+
+        A reference change is not a field generation change; comparing those
+        unrelated counters can otherwise retain an incompatible front.
+        """
+        with self._lock:
+            layer = self.layers[role]
+            self.budget.release(role, layer.visible_budget_bytes)
+            layer.visible = None
+            layer.visible_resources = {}
+            layer.visible_budget_bytes = 0
+            layer.native_ready = False
+            layer.native_frame_observed = False
+
+    def _dispose_pending(self, role, layer):
+        self.budget.release(role, layer.pending_budget_bytes)
+        layer.pending_budget_bytes = 0
+        layer.pending = None
+        layer.pending_placement = None
+        layer.completion_token = None
+        layer.resources = {}
 
     def set_generation(self, generation: int) -> None:
         self.current_generation = generation
@@ -210,6 +286,10 @@ class PublicationManager:
 
     def rebase_all(self, new_camera, new_generation: int) -> dict:
         """Atomically rebase all layers to new camera/generation."""
+        with self._lock:
+            return self._rebase_all_locked(new_camera, new_generation)
+
+    def _rebase_all_locked(self, new_camera, new_generation: int) -> dict:
         report = {
             "rebased": [],
             "rejected": [],
@@ -226,20 +306,19 @@ class PublicationManager:
                     report["retained"].append(role)
                 else:
                     # Stale visible - reject
-                    self.budget.release(role, layer.budget_bytes)
+                    self.budget.release(role, layer.visible_budget_bytes)
                     layer.visible = None
-                    layer.budget_bytes = 0
+                    layer.visible_resources = {}
+                    layer.visible_budget_bytes = 0
                     layer.native_ready = False
                     layer.native_frame_observed = False
                     report["rejected"].append(role)
             if layer.pending is not None:
                 # Reject all pending work from old reference
-                self.budget.release(role, layer.budget_bytes)
-                layer.pending = None
-                layer.resources.clear()
-                layer.budget_bytes = 0
-                layer.native_ready = False
-                layer.native_frame_observed = False
+                self._dispose_pending(role, layer)
+                if layer.visible is None:
+                    layer.native_ready = False
+                    layer.native_frame_observed = False
                 report["rejected"].append(f"{role}(pending)")
 
         return report

@@ -1367,6 +1367,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._native_budget = native_weather_budget
             self._native_contexts = {}
             self._native_bindings = {}
+            self._native_requests = {}
+            self._native_images = {}
+            self._native_publication_tokens = {}
             self._native_error = ""
             # The ENC cells are an experimental addition to the chart layer.
             # They are off by default, and they never turn on by themselves.
@@ -1416,6 +1419,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_ready_at = None
             self._chart_request_state = None
             self._chart_publish_state = None
+            self._chart_pending = None
+            self._chart_attempt = 0
+            self._chart_redelivery_generation = None
+            self._chart_budget_refusal = None
+            self._chart_visible_generation = None
+            self._chart_front_slot = 0
             self._chart_loading_shown = False
             self._chart_status_item = None
             self._weather_ready_at = None
@@ -1504,9 +1513,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
             self._fill_back = (
                 self._weather.findChild(QObject, "weatherFillBack")
-                if self._native_weather_fields and self._fill is not None
+                if self._fill is not None
                 else None
             )
+            self._fill_staging = False
+            self._image_fill_token = None
+            self._image_fill_pending_epoch = None
+            self._image_fill_failed = None
+            self._image_fill_requested_key = None
+            self._image_weather_visible = False
             self._native_front_index = 0
             self._native_active_camera = None
             self._native_pending_camera = None
@@ -1522,6 +1537,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     raise RuntimeError(
                         "The GRIB viewport could not load its chart scene"
                     )
+                getattr(self._chart, "slotResult").connect(
+                    self._chart_slot_result, Qt.ConnectionType.QueuedConnection
+                )
                 self._chart_model = ViewportChartLayer(
                     paths=model.paths,
                     data_dir=chart_data_dir,
@@ -1570,6 +1588,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 chart_requests=0,
                 native_field_requests=0,
             )
+            if not self._native_weather_fields:
+                for item in (self._fill, self._fill_back):
+                    if item is not None:
+                        for signal in (
+                            "preparedChanged",
+                            "shaderErrorChanged",
+                            "sourceErrorChanged",
+                        ):
+                            getattr(item, signal).connect(
+                                lambda *args, slot=item: self._image_fill_changed(slot)
+                            )
             if self._native_weather_fields:
                 from .gpuweathertextures import (
                     NativeWeatherBudget,
@@ -1723,7 +1752,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """The chart layer's own state; it never changes the weather's."""
             self._chart_state = state
             if self._chart is not None:
-                self._chart.setProperty("chartLoading", state == "loading")
+                self._chart.setProperty(
+                    "chartLoading",
+                    state == "loading" or self._chart_pending is not None,
+                )
+                self._chart.setProperty("chartUnavailable", state == "unavailable")
                 if state == "loading":
                     # The chart layer's own loading state was shown.
                     self._chart_loading_shown = True
@@ -1731,39 +1764,182 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     # A failed composition never leaves the previous ENC on
                     # screen: it is not current, and it is not presented as
                     # if it were.
-                    cast(QObject, self._chart).setProperty("source", QUrl(""))
+                    self._clear_chart()
             self._update_enc_status()
 
         def _publish_chart(self, payload):
-            """Publish a composed chart image (GUI thread)."""
+            """Stage a composed image without disturbing the visible chart."""
             generation, image, metadata = payload
             if self._disposed:
-                # A disposed viewport never shows a composition.
                 return
-            self._chart_viewport = metadata["viewport"]
-            self._chart_composition_camera = metadata.get("camera")
-            self._chart_composition_dpr = metadata.get("factor")
-            url = cast(Any, self._chart_provider).publish(generation, image)
-            cast(QObject, self._chart).setProperty("source", QUrl(url))
-            self.counters["chart_publications"] += 1
-            # Stage chart through PublicationManager
+            if not self._chart_payload_valid(generation, metadata):
+                self._chart_redelivery_generation = generation
+                return
+            if self._chart_pending is not None and self._chart_pending[0] == generation:
+                return
+            if self._chart_visible_generation == generation:
+                return
+            budget = self._publication_manager.budget
+            signature = (
+                budget.current_usage[LayerRole.CHART],
+                budget.total_used(),
+                budget.layer_caps[LayerRole.CHART],
+                budget.global_cap,
+            )
+            if getattr(self, "_chart_budget_refusal", None) == (generation, signature):
+                return
+            self._chart_redelivery_generation = None
+            if image.isNull():
+                self._chart_state_changed("unavailable")
+                return
+            self._reject_chart_pending()
             identity = LayerIdentity(
                 role=LayerRole.CHART,
                 generation=generation,
                 source_key=(generation, metadata.get("camera_hash", "")),
                 content_hash=str(image),
             )
-            if self._publication_manager.stage_resources(
+            self._chart_attempt += 1
+            token = str(self._chart_attempt)
+            manager = self._publication_manager
+            size = image.sizeInBytes()
+            if not manager.stage_resources(
                 LayerRole.CHART,
                 identity,
                 LayerPlacement(),
                 {ResourceKind.IMAGE: image},
-                1024 * 1024,
+                size,
+                completion_token=token,
             ):
-                self._publication_manager.verify_and_adopt(
-                    LayerRole.CHART, lambda r: True
+                layer = manager.layers[LayerRole.CHART]
+                budget = manager.budget
+                visible = layer.visible_budget_bytes
+                chart_used = budget.current_usage[LayerRole.CHART]
+                chart_cap = budget.layer_caps[LayerRole.CHART]
+                # Trade the front only when withdrawing it makes both caps fit.
+                fallback = (
+                    layer.visible is not None
+                    and visible > 0
+                    and (
+                        chart_used + size > chart_cap
+                        or budget.total_used() + size > budget.global_cap
+                    )
+                    and chart_used - visible + size <= chart_cap
+                    and budget.total_used() - visible + size <= budget.global_cap
                 )
+                if fallback:
+                    self._chart_state_changed("loading")
+                    self._clear_chart()
+                    if not self._chart_payload_valid(generation, metadata):
+                        self._chart_redelivery_generation = generation
+                        return
+                    self._chart_attempt += 1
+                    token = str(self._chart_attempt)
+                    staged = manager.stage_resources(
+                        LayerRole.CHART,
+                        identity,
+                        LayerPlacement(),
+                        {ResourceKind.IMAGE: image},
+                        size,
+                        completion_token=token,
+                    )
+                else:
+                    staged = False
+                if not staged:
+                    self._clear_chart()
+                    self._chart_state_changed("unavailable")
+                    self._chart_budget_refusal = (
+                        generation,
+                        (
+                            budget.current_usage[LayerRole.CHART],
+                            budget.total_used(),
+                            budget.layer_caps[LayerRole.CHART],
+                            budget.global_cap,
+                        ),
+                    )
+                    return
+            self._chart_budget_refusal = None
+            slot = 1 - self._chart_front_slot
+            self._chart_pending = (generation, metadata, slot, token)
+            url = self._chart_provider.publish_retained(
+                generation, image, self._chart_visible_generation
+            )
+            self._chart.setProperty("chartLoading", True)
+            self._chart.setProperty("chartUnavailable", False)
+            self._chart.setProperty(f"slot{slot}Token", token)
+            self._chart.setProperty(f"slot{slot}Source", QUrl(url))
+
+        def _chart_payload_valid(self, generation, metadata):
+            model = self._chart_model
+            if model is None or self._camera is None or not isinstance(metadata, dict):
+                return False
+            with model._condition:
+                return (
+                    not model._closed
+                    and model._generation == generation
+                    and model._published is not None
+                    and model._published[0] == generation
+                    and metadata.get("viewport") is not None
+                    and model._reusable(self._camera)
+                )
+
+        def _reject_chart_pending(self):
+            pending = self._chart_pending
+            if pending is None:
+                return
+            _, _, slot, token = pending
+            self._chart_pending = None
+            self._publication_manager.reject_pending(LayerRole.CHART, token)
+            self._chart.setProperty(f"slot{slot}Token", "")
+            self._chart.setProperty(f"slot{slot}Source", QUrl(""))
+            self._chart_provider.retain(self._chart_visible_generation)
+
+        def _clear_chart(self):
+            self._reject_chart_pending()
+            self._chart.setProperty(f"slot{self._chart_front_slot}Token", "")
+            self._chart.setProperty(f"slot{self._chart_front_slot}Source", QUrl(""))
+            self._publication_manager.withdraw_visible(LayerRole.CHART)
+            self._chart_visible_generation = None
+            self._chart_viewport = None
+            self._chart_composition_camera = None
+            self._chart_composition_dpr = None
+            self._chart_provider.retain()
+
+        def _chart_slot_result(self, slot, token, success):
+            pending = self._chart_pending
+            if self._disposed or pending is None or (slot, token) != pending[2:]:
+                return
+            generation, metadata, _, _ = pending
+            if not success or not self._chart_payload_valid(generation, metadata):
+                if success:
+                    self._chart_redelivery_generation = generation
+                self._reject_chart_pending()
+                if not success:
+                    self._chart_state_changed("unavailable")
+                return
+            adopted, _ = self._publication_manager.verify_and_adopt(
+                LayerRole.CHART,
+                lambda resources: ResourceKind.IMAGE in resources,
+                token,
+            )
+            if not adopted:
+                self._reject_chart_pending()
+                return
+            old_slot = self._chart_front_slot
+            self._chart_pending = None
+            self._chart_viewport = metadata["viewport"]
+            self._chart_composition_camera = metadata.get("camera")
+            self._chart_composition_dpr = metadata.get("factor")
             self._place_chart()
+            self._chart_front_slot = slot
+            self._chart.setProperty("frontSlot", slot)
+            self._chart.setProperty(f"slot{old_slot}Token", "")
+            self._chart.setProperty(f"slot{old_slot}Source", QUrl(""))
+            self._chart_visible_generation = generation
+            self._chart_provider.retain(generation)
+            self._chart.setProperty("chartLoading", False)
+            self._chart.setProperty("chartUnavailable", False)
+            self.counters["chart_publications"] += 1
             self._chart_publish_state = self._chart_state_now()
             self._update_enc_status()
             if self._chart_ready_at is None:
@@ -1797,7 +1973,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             chart = getattr(self, "_chart", None)
             if chart is not None:
-                cast(QObject, chart).setProperty("source", QUrl(""))
+                self._clear_chart()
             self._update_enc_status()
             camera = getattr(self, "_camera", None)
             if camera is not None and not getattr(self, "_disposed", False):
@@ -2094,7 +2270,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self.counters["chart_requests"] += 1
             self._chart_requested_after_weather = True
             self._chart_request_state = self._chart_state_now()
-            self._chart_model.request(self._camera)
+            generation = self._chart_model.request(self._camera)
+            refusal = getattr(self, "_chart_budget_refusal", None)
+            retry_refusal = False
+            if refusal is not None and refusal[0] == generation:
+                budget = self._publication_manager.budget
+                signature = (
+                    budget.current_usage[LayerRole.CHART],
+                    budget.total_used(),
+                    budget.layer_caps[LayerRole.CHART],
+                    budget.global_cap,
+                )
+                retry_refusal = refusal[1] != signature
+            if generation is not None and (
+                generation == self._chart_redelivery_generation or retry_refusal
+            ):
+                with self._chart_model._condition:
+                    payload = self._chart_model._published
+                    if payload is None or payload[0] != generation:
+                        payload = None
+                self._chart_redelivery_generation = None
+                if payload is not None:
+                    self._publish_chart(payload)
 
         def _chart_state_now(self):
             """The camera, the forecast time and the published weather."""
@@ -2128,7 +2325,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if item is None or not shiboken6.isValid(item):
                 return
             if status.get("invalidated"):
+                request = getattr(self, "_native_requests", {}).get((role, slot))
+                if request is not None and status.get("sequence") != request[0]:
+                    return
                 self._native_bindings.pop((role, slot), None)
+                getattr(self, "_native_requests", {}).pop((role, slot), None)
+                getattr(self, "_native_images", {}).pop((role, slot), None)
+                token = self._native_publication_tokens.pop((role, slot), None)
                 item.setProperty("nativeReady", False)
                 item.setProperty("nativeFrameObserved", False)
                 if slot == self._native_front_index:
@@ -2145,13 +2348,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             else None
                         ),
                     )
-                # Reject pending in PublicationManager
-                layer_role = LayerRole.BARBS if role == "barbs" else LayerRole.FILL
-                self._publication_manager.reject_pending(LayerRole[role.upper()])
+                if token is not None:
+                    self._publication_manager.reject_pending(role, expected_token=token)
                 return
             if status["key"].identity != self._native_bindings.get((role, slot)):
                 return
+            request = getattr(self, "_native_requests", {}).get((role, slot))
+            if (
+                request is not None
+                and (status.get("sequence"), status["key"]) != request
+            ):
+                return
             if status.get("error"):
+                self._native_bindings.pop((role, slot), None)
+                getattr(self, "_native_requests", {}).pop((role, slot), None)
+                getattr(self, "_native_images", {}).pop((role, slot), None)
+                token = self._native_publication_tokens.pop((role, slot), None)
+                if token is not None:
+                    self._publication_manager.reject_pending(role, expected_token=token)
+                item.setProperty("nativeReady", False)
+                item.setProperty("nativeFrameObserved", False)
                 self._native_error = status["error"]
                 if slot == self._native_front_index:
                     self._set_weather_visible(False)
@@ -2161,10 +2377,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             item.setProperty("nativeReady", status["ready"])
             item.setProperty("nativeFrameObserved", bool(status.get("frame_observed")))
             # Verify and adopt through PublicationManager
-            layer_role = LayerRole[role.upper()]
-            if status["ready"]:
+            token = self._native_publication_tokens.get((role, slot))
+            if (
+                status["ready"]
+                and token is not None
+                and slot == self._native_front_index
+            ):
                 ok, msg = self._publication_manager.verify_and_adopt(
-                    layer_role, lambda r: status["ready"]
+                    role, lambda r: status["ready"], expected_token=token
                 )
                 if ok:
                     # Update native tracking
@@ -2243,8 +2463,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 )
                 self._fill.setVisible(self._wind_gradient_enabled)
             # Commit through PublicationManager
-            self._publication_manager.layers["barbs"].commit_pending()
-            self._publication_manager.layers["fill"].commit_pending()
+            for role in ("barbs", "fill"):
+                token = getattr(self, "_native_publication_tokens", {}).get(
+                    (role, self._native_front_index)
+                )
+                if token is not None:
+                    self._publication_manager.commit_pending(role, expected_token=token)
             for role in ("barbs", "fill"):
                 context = self._native_contexts.get((role, old_index))
                 if context is not None:
@@ -2252,13 +2476,44 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._provider.pin_selection(self._native_pending_selection_urls)
             self._native_pending_selection_urls = ()
 
-        def _bind_native_layer(self, role, identity, images, pending=False):
+        def _bind_native_layer(
+            self, role, identity, images, pending=False, completion_token=None
+        ):
             slot = 1 - self._native_front_index if pending else self._native_front_index
             item = self._native_item(role, slot)
             if item is None:
                 raise RuntimeError(f"Viewport has no native {role} layer")
             context = self._native_contexts[role, slot]
-            if self._native_bindings.get((role, slot)) == identity and context.ready:
+            images = tuple(images)
+            image_refs = getattr(self, "_native_images", None)
+            if image_refs is None:
+                image_refs = self._native_images = {}
+            previous = image_refs.get((role, slot))
+            image_keys = tuple(
+                image.cacheKey() if callable(getattr(image, "cacheKey", None)) else None
+                for image in images
+            )
+            same_images = (
+                previous is not None
+                and len(previous[0]) == len(images)
+                and all(old is new for old, new in zip(previous[0], images))
+                and previous[1] == image_keys
+            )
+            tokens = getattr(self, "_native_publication_tokens", None)
+            if tokens is not None:
+                if completion_token is None:
+                    tokens.pop((role, slot), None)
+                else:
+                    tokens[role, slot] = completion_token
+            if (
+                self._native_bindings.get((role, slot)) == identity
+                and context.ready
+                and same_images
+            ):
+                if completion_token is not None and not pending:
+                    self._publication_manager.commit_pending(
+                        role, expected_token=completion_token
+                    )
                 return
             self._native_bindings[role, slot] = identity
             self._native_error = ""
@@ -2266,7 +2521,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             warm = context.request(
                 identity, images, "nodes" if role == "barbs" else "grid"
             )
+            requests = getattr(self, "_native_requests", None)
+            if requests is None:
+                requests = self._native_requests = {}
+            lock = getattr(context, "_lock", None)
+            if lock is not None:
+                with lock:
+                    requests[role, slot] = context._latest
+            else:
+                requests.pop((role, slot), None)
+            image_refs[role, slot] = (images, image_keys)
             item.setProperty("nativeReady", warm)
+            if warm and completion_token is not None and not pending:
+                self._publication_manager.commit_pending(
+                    role, expected_token=completion_token
+                )
             self.counters["native_field_requests"] += 1
 
         def native_observations(self):
@@ -2299,6 +2568,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_model is not None and not self._chart_model._enc_only:
                 raise ValueError("Replace chart-enabled viewports as a whole")
             self._weather.setVisible(False)
+            if not self._native_weather_fields:
+                self._cancel_image_fill(withdraw=True)
+                self._publication_manager.rebase_all(
+                    self._camera, self._publication_manager.current_generation + 1
+                )
             self._weather_display_camera = None
             self._native_active_camera = self._native_pending_camera = None
             self._native_active_identity = self._native_pending_identity = None
@@ -2307,6 +2581,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             for context in self._native_contexts.values():
                 context.clear()
             self._native_bindings.clear()
+            self._native_requests.clear()
+            self._native_images.clear()
+            self._native_publication_tokens.clear()
             self._native_error = ""
             old = self._model
             old.on_change = None
@@ -2368,12 +2645,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def set_wind_gradient(self, enabled):
             self._wind_gradient_enabled = bool(enabled)
-            self._weather.setProperty("fillEnabled", self._wind_gradient_enabled)
+            if self._native_weather_fields:
+                self._weather.setProperty("fillEnabled", self._wind_gradient_enabled)
             if self._fill is not None:
                 self._fill.setOpacity(
                     self._wind_gradient_opacity if self._wind_gradient_enabled else 0.0
                 )
-                self._fill.setVisible(self._wind_gradient_enabled)
+                self._fill.setVisible(
+                    self._wind_gradient_enabled
+                    and (
+                        self._native_weather_fields
+                        or (
+                            getattr(self, "_image_weather_visible", False)
+                            and self._image_fill_matches_requested()
+                        )
+                    )
+                )
             if self._fill_back is not None:
                 self._fill_back.setOpacity(
                     0.01
@@ -2904,6 +3191,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._disposed:
                 return
             self._disposed = True
+            if not self._native_weather_fields:
+                self._cancel_image_fill(withdraw=True)
             self._marine_layer.close()
             self._icoads_layer.close()
             self._streamline_model.close()
@@ -2987,6 +3276,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _set_weather_visible(self, visible):
             """Chart scenes remain visible even when weather has no data."""
+            if not self._native_weather_fields:
+                self._image_weather_visible = visible
+                if not visible:
+                    self._cancel_image_fill()
             if (
                 getattr(self, "_chart_layer", False)
                 or getattr(self, "_enc_chart_layer", False)
@@ -2995,13 +3288,32 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._weather.setVisible(True)
                 self._barbs.setVisible(visible)
                 if self._fill is not None:
-                    self._fill.setVisible(visible and self._wind_gradient_enabled)
+                    self._fill.setVisible(
+                        visible
+                        and self._wind_gradient_enabled
+                        and (
+                            self._native_weather_fields
+                            or self._image_fill_matches_requested()
+                        )
+                    )
                 if not visible and self._native_weather_fields:
                     self._barbs_back.setVisible(False)
                     if self._fill_back is not None:
                         self._fill_back.setVisible(False)
             else:
                 self._weather.setVisible(visible)
+                if self._fill is not None:
+                    self._fill.setVisible(
+                        visible
+                        and self._wind_gradient_enabled
+                        and self._image_fill_matches_requested()
+                    )
+
+        def _image_fill_matches_requested(self):
+            layer = self._publication_manager.layers["fill"]
+            return layer.visible is not None and layer.visible_resources.get(
+                "key"
+            ) == getattr(self, "_image_fill_requested_key", None)
 
         def set_camera(self, camera):
             """Adopt a camera and publish the portrayal it may show."""
@@ -3050,7 +3362,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     ):
                         # Withdraw old-scale/time ENC immediately, not after
                         # the settle timer or the replacement worker finishes.
-                        cast(QObject, self._chart).setProperty("source", QUrl(""))
+                        self._clear_chart()
                 # Check if the camera change invalidates the pan reference
                 dpr = self.devicePixelRatio()
                 reference = self._publication_manager.reference_camera
@@ -3066,6 +3378,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         pass
                     else:
                         # Reference invalidated - rebase all layers
+                        if not self._native_weather_fields:
+                            self._cancel_image_fill(withdraw=True)
                         new_gen = self._publication_manager.current_generation + 1
                         self._publication_manager.set_generation(new_gen)
                         self._publication_manager.rebase_all(camera, new_gen)
@@ -3118,7 +3432,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         )
                 else:
                     self._show_state(
-                        "ready" if self._barbs.property("ready") else "loading"
+                        "ready"
+                        if self._barbs.property("ready")
+                        and (
+                            not self._wind_gradient_enabled
+                            or self._fill is None
+                            or self._image_fill_matches_requested()
+                        )
+                        else "loading"
                     )
                 self.cameraChanged.emit(camera)
                 return state
@@ -3247,9 +3568,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     return False
                 field_urls = ()
             else:
-                field_urls = self._provider.publish_field(
-                    field.images, field.generation
-                )
+                try:
+                    # The barbs' node field must remain servable while the
+                    # gridded fill prepares on the same bounded provider.
+                    field_urls = self._provider.reserve_field(
+                        (self, "barbs"), field.images, field.generation
+                    )
+                except ValueError:
+                    self._show_state("unavailable")
+                    return False
             selection_urls = self._provider.publish_selection(
                 selection.images, selection.generation
             )
@@ -3258,20 +3585,232 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             # re-encodes nothing.
             if not self._native_weather_fields:
                 for resident in self._model.window_fields():
-                    self._provider.publish_field(resident.images, resident.generation)
+                    try:
+                        self._provider.publish_field(
+                            resident.images, resident.generation
+                        )
+                    except ValueError:
+                        # Lookahead is optional; protected displayed fields win.
+                        continue
             # The two layers are staged on their own inputs: the fill sees the
             # resident field and the temporal blend, the barbs see the resident
             # field and the current-view selection.
             self._native_publishing = True
             try:
-                self._publish_fill(field, field_urls, camera)
+                if self._publish_fill(field, field_urls, camera) is False:
+                    if not self._native_weather_fields:
+                        self._provider.cancel_field((self, "barbs"))
+                    return False
                 self._publish_barbs(
                     field, selection, field_urls, selection_urls, camera
                 )
+                if not self._native_weather_fields:
+                    self._provider.promote_field((self, "barbs"))
             finally:
                 self._native_publishing = False
             self._published = selection.generation
             self._published_generations.add(selection.generation)
+
+        def _image_fill_changed(self, item):
+            if not self._disposed and item is self._fill_back:
+                self._try_commit_image_fill(getattr(self, "_image_fill_token", None))
+
+        def _cancel_image_fill(self, withdraw=False):
+            self._image_fill_token = None
+            self._image_fill_pending_epoch = None
+            self._publication_manager.reject_pending(LayerRole.FILL)
+            self._provider.cancel_field(self)
+            if self._fill_back is not None:
+                self._fill_back.setVisible(False)
+                for name in ("u0Source", "v0Source", "u1Source", "v1Source"):
+                    self._fill_back.setProperty(name, QUrl())
+            if withdraw:
+                if self._fill is not None:
+                    self._fill.setVisible(False)
+                    for name in ("u0Source", "v0Source", "u1Source", "v1Source"):
+                        self._fill.setProperty(name, QUrl())
+                self._publication_manager.withdraw_visible(LayerRole.FILL)
+                self._provider.release_fields(self)
+                self._provider.release_fields((self, "barbs"))
+                self._published_fill = None
+                self._image_fill_requested_key = None
+                self._image_fill_failed = None
+
+        def _stage_image_fill(self, field, camera):
+            grid = field.grid
+            if self._fill_back is None or grid is None or len(grid.images) != 4:
+                self._image_fill_requested_key = None
+                self._fill.setVisible(False)
+                self._show_state("unavailable")
+                return False
+            key = f"{field.generation}/grid"
+            self._image_fill_requested_key = key
+            layer = self._publication_manager.layers["fill"]
+            epoch = self._publication_manager.current_generation
+            if getattr(self, "_image_fill_failed", None) == (key, epoch):
+                self._show_state("unavailable")
+                return False
+            if layer.visible is not None and not self._image_fill_matches_requested():
+                # The old forecast's fill must not accompany new barbs as if
+                # both belonged to the requested time/field.
+                self._fill.setVisible(False)
+            if (
+                self._published_fill == key
+                and layer.visible is not None
+                and layer.pending is None
+            ):
+                item = self._fill
+                token = None
+            else:
+                old_token = getattr(self, "_image_fill_token", None)
+                reuse_pending = (
+                    old_token is not None
+                    and layer.pending is not None
+                    and layer.resources.get("key") == key
+                    and layer.pending.source_key[0] == field.identity
+                    and getattr(self, "_image_fill_pending_epoch", None) == epoch
+                )
+                budget = sum(image.sizeInBytes() for image in grid.images)
+                delta = max(0, budget - layer.pending_budget_bytes)
+                if not self._publication_manager.budget.can_allocate("fill", delta):
+                    self._show_state("unavailable")
+                    return False
+                try:
+                    urls = self._provider.reserve_field(self, grid.images, key)
+                except ValueError:
+                    self._show_state("unavailable")
+                    return False
+                token = old_token if reuse_pending else object()
+                identity = LayerIdentity(
+                    role=LayerRole.FILL,
+                    generation=field.generation,
+                    source_key=(field.identity, key, camera.stamp()),
+                    content_hash=getattr(grid, "content_hash", str(grid.images)),
+                )
+                if not self._publication_manager.stage_resources(
+                    LayerRole.FILL,
+                    identity,
+                    LayerPlacement(),
+                    {ResourceKind.IMAGE: grid.images, "key": key, "urls": urls},
+                    budget,
+                    completion_token=token,
+                ):
+                    self._provider.cancel_field(self)
+                    self._show_state("unavailable")
+                    return False
+                self._image_fill_token = token
+                self._image_fill_pending_epoch = epoch
+                item = self._fill_back
+            self._fill_staging = True
+            try:
+                if token is not None:
+                    item.setVisible(False)
+                item.setProperty("blend", field.staged.weight(camera.stamp()))
+                reference = self._publication_manager.reference_camera
+                if reference is not None:
+                    ref_pan = PanReference.from_camera(
+                        reference, getattr(reference, "dpr", 1.0)
+                    )
+                    dx, dy = ref_pan.translation_to(camera)
+                    rect = _grid_rect(reference.view(), grid.lattice)
+                    rect = type(rect)(
+                        rect.x() + dx, rect.y() + dy, rect.width(), rect.height()
+                    )
+                else:
+                    rect = _grid_rect(camera.view(), grid.lattice)
+                for name, value in (
+                    ("gridX", rect.x()),
+                    ("gridY", rect.y()),
+                    ("gridWidth", rect.width()),
+                    ("gridHeight", rect.height()),
+                ):
+                    item.setProperty(name, value)
+                if token is not None:
+                    for name, url in zip(
+                        ("u0Source", "v0Source", "u1Source", "v1Source"), urls
+                    ):
+                        item.setProperty(name, QUrl(url))
+            finally:
+                self._fill_staging = False
+            if token is not None:
+                self._try_commit_image_fill(token)
+                if not reuse_pending and isinstance(self, QObject):
+                    # Some backends do not compile an effect inside a fully
+                    # hidden subtree. Do not retain an unready field forever.
+                    QTimer.singleShot(
+                        10000, lambda staged=token: self._image_fill_timeout(staged)
+                    )
+            return token
+
+        def _image_fill_timeout(self, token):
+            if self._disposed or token is not getattr(self, "_image_fill_token", None):
+                return
+            layer = self._publication_manager.layers["fill"]
+            self._image_fill_failed = (
+                layer.resources.get("key"),
+                self._publication_manager.current_generation,
+            )
+            self._cancel_image_fill()
+            if not self._image_fill_matches_requested():
+                self._fill.setVisible(False)
+            self._show_state("unavailable")
+
+        def _try_commit_image_fill(self, token):
+            if (
+                self._disposed
+                or getattr(self, "_fill_staging", False)
+                or token is None
+                or token is not getattr(self, "_image_fill_token", None)
+            ):
+                return
+            layer = self._publication_manager.layers["fill"]
+            if layer.pending is None or layer.completion_token is not token:
+                return
+            if self._fill_back.property("shaderError") or self._fill_back.property(
+                "sourceError"
+            ):
+                self._image_fill_failed = (
+                    layer.resources.get("key"),
+                    self._publication_manager.current_generation,
+                )
+                self._cancel_image_fill()
+                if not self._image_fill_matches_requested():
+                    self._fill.setVisible(False)
+                self._show_state("unavailable")
+                return
+            if not self._fill_back.property("prepared"):
+                return
+            adopted, _ = self._publication_manager.verify_and_adopt(
+                LayerRole.FILL,
+                lambda resources: len(resources.get(ResourceKind.IMAGE, ())) == 4
+                and len(resources.get("urls", ())) == 4,
+                expected_token=token,
+            )
+            if not adopted:
+                self._cancel_image_fill()
+                if not self._image_fill_matches_requested():
+                    self._fill.setVisible(False)
+                self._show_state("unavailable")
+                return
+            self._provider.promote_field(self)
+            self._image_fill_token = None
+            self._image_fill_pending_epoch = None
+            self._image_fill_failed = None
+            old = self._fill
+            old.setVisible(False)
+            self._fill, self._fill_back = self._fill_back, old
+            self._published_fill = layer.visible_resources["key"]
+            self._fill.setOpacity(self._wind_gradient_opacity)
+            self._fill.setVisible(
+                self._wind_gradient_enabled
+                and getattr(self, "_image_weather_visible", True)
+            )
+            self.counters["fill_publications"] += 1
+            self.counters["fill_uploads"] += 1
+            if not getattr(self, "_native_publishing", False):
+                self._show_state(
+                    "ready" if self._barbs.property("ready") else "loading"
+                )
 
         def _publish_fill(self, field, field_urls, camera):
             """Stage the fill layer on its own inputs.
@@ -3286,7 +3825,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             grid = field.grid
             if grid is None:
-                return
+                return False if self._wind_gradient_enabled else None
+            if not self._native_weather_fields:
+                return self._stage_image_fill(field, camera)
             key = f"{field.generation}/grid"
             item = (
                 self._fill_back
@@ -3294,51 +3835,41 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 and self._native_pending_camera is not None
                 else self._fill
             )
-            # PublicationManager observes staging, but does not gate the
-            # established weather-layer publication path.
-            placement = LayerPlacement()
-            resources = {ResourceKind.IMAGE: grid.images}
-            budget_bytes = sum(
-                size()
-                for img in grid.images
-                if callable(size := getattr(img, "sizeInBytes", None))
-            )
-            identity = LayerIdentity(
-                role=LayerRole.FILL,
-                generation=field.generation,
-                source_key=(field.identity, key, camera.stamp()),
-                content_hash=(
-                    grid.content_hash
-                    if hasattr(grid, "content_hash")
-                    else str(grid.images)
-                ),
-            )
-            self._publication_manager.stage_resources(
-                LayerRole.FILL,
-                identity,
-                placement,
-                resources,
-                budget_bytes,
-            )
             if self._native_weather_fields:
+                resources = {ResourceKind.IMAGE: grid.images}
+                budget_bytes = sum(
+                    size()
+                    for img in grid.images
+                    if callable(size := getattr(img, "sizeInBytes", None))
+                )
+                identity = LayerIdentity(
+                    role=LayerRole.FILL,
+                    generation=field.generation,
+                    source_key=(field.identity, key, camera.stamp()),
+                    content_hash=(
+                        grid.content_hash
+                        if hasattr(grid, "content_hash")
+                        else str(grid.images)
+                    ),
+                )
+                token = object()
+                staged = self._publication_manager.stage_resources(
+                    LayerRole.FILL,
+                    identity,
+                    LayerPlacement(),
+                    resources,
+                    budget_bytes,
+                    completion_token=token,
+                )
+                if not staged:
+                    self._publication_manager.reject_pending(LayerRole.FILL)
                 self._bind_native_layer(
                     "fill",
                     field.identity,
                     grid.images,
                     pending=self._native_pending_camera is not None,
+                    completion_token=token if staged else None,
                 )
-                self._publication_manager.verify_and_adopt(
-                    LayerRole.FILL, lambda r: True  # verification passed
-                )
-            elif self._published_fill != key:
-                urls = self._provider.publish_field(grid.images, key)
-                for name, url in zip(
-                    ("u0Source", "v0Source", "u1Source", "v1Source"), urls
-                ):
-                    self._fill.setProperty(name, QUrl(url))
-                self._published_fill = key
-                self.counters["fill_publications"] += 1
-                self.counters["fill_uploads"] += 1
             item.setProperty("blend", field.staged.weight(camera.stamp()))
             # Use reference camera for grid placement (shared pan)
             reference = self._publication_manager.reference_camera
@@ -3378,14 +3909,61 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._native_weather_fields:
                 self._bind_native_layer("fill", ("manual", key), images)
                 return ()
-            urls = self._provider.publish_field(images, key)
-            for name, url in zip(
-                ("u0Source", "v0Source", "u1Source", "v1Source"), urls
+            if self._fill_back is None or len(images) != 4:
+                raise ValueError("The fill requires four image resources")
+            images = tuple(images)
+            self._image_fill_requested_key = key
+            layer = self._publication_manager.layers["fill"]
+            if layer.visible is not None and not self._image_fill_matches_requested():
+                self._fill.setVisible(False)
+            if self._published_fill == key and layer.visible is not None:
+                return layer.visible_resources["urls"]
+            bytes_needed = sum(image.sizeInBytes() for image in images)
+            delta = max(0, bytes_needed - layer.pending_budget_bytes)
+            if not self._publication_manager.budget.can_allocate("fill", delta):
+                self._show_state("unavailable")
+                return ()
+            try:
+                urls = self._provider.reserve_field(self, images, key)
+            except ValueError:
+                self._show_state("unavailable")
+                return ()
+            token = object()
+            identity = LayerIdentity(
+                role=LayerRole.FILL,
+                generation=self._publication_manager.current_generation,
+                source_key=("manual", key),
+                content_hash=str(key),
+            )
+            if not self._publication_manager.stage_resources(
+                LayerRole.FILL,
+                identity,
+                LayerPlacement(),
+                {ResourceKind.IMAGE: images, "key": key, "urls": urls},
+                bytes_needed,
+                completion_token=token,
             ):
-                self._fill.setProperty(name, QUrl(url))
-            self._published_fill = key
-            self.counters["fill_publications"] += 1
-            self.counters["fill_uploads"] += 1
+                self._provider.cancel_field(self)
+                self._show_state("unavailable")
+                return ()
+            self._image_fill_token = token
+            self._image_fill_pending_epoch = (
+                self._publication_manager.current_generation
+            )
+            self._fill_staging = True
+            try:
+                self._fill_back.setVisible(False)
+                for name, url in zip(
+                    ("u0Source", "v0Source", "u1Source", "v1Source"), urls
+                ):
+                    self._fill_back.setProperty(name, QUrl(url))
+            finally:
+                self._fill_staging = False
+            self._try_commit_image_fill(token)
+            if isinstance(self, QObject):
+                QTimer.singleShot(
+                    10000, lambda staged=token: self._image_fill_timeout(staged)
+                )
             return urls
 
         def _publish_barbs(self, field, selection, field_urls, selection_urls, camera):
@@ -3400,42 +3978,42 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 and self._native_pending_camera is not None
                 else self._barbs
             )
-            # PublicationManager observes staging, but does not gate existing
-            # weather publication.
-            resources = {ResourceKind.IMAGE: field.images}
-            budget_bytes = sum(
-                size()
-                for img in field.images
-                if callable(size := getattr(img, "sizeInBytes", None))
-            )
-            identity = LayerIdentity(
-                role=LayerRole.BARBS,
-                generation=field.generation,
-                source_key=(field.identity, str(selection.shape), camera.stamp()),
-                content_hash=(
-                    field.content_hash
-                    if hasattr(field, "content_hash")
-                    else str(field.images)
-                ),
-            )
-            self._publication_manager.stage_resources(
-                LayerRole.BARBS,
-                identity,
-                LayerPlacement(),
-                resources,
-                budget_bytes,
-            )
             if self._native_weather_fields:
+                resources = {ResourceKind.IMAGE: field.images}
+                budget_bytes = sum(
+                    size()
+                    for img in field.images
+                    if callable(size := getattr(img, "sizeInBytes", None))
+                )
+                identity = LayerIdentity(
+                    role=LayerRole.BARBS,
+                    generation=field.generation,
+                    source_key=(field.identity, str(selection.shape), camera.stamp()),
+                    content_hash=(
+                        field.content_hash
+                        if hasattr(field, "content_hash")
+                        else str(field.images)
+                    ),
+                )
+                token = object()
+                staged = self._publication_manager.stage_resources(
+                    LayerRole.BARBS,
+                    identity,
+                    LayerPlacement(),
+                    resources,
+                    budget_bytes,
+                    completion_token=token,
+                )
+                if not staged:
+                    self._publication_manager.reject_pending(LayerRole.BARBS)
                 self._bind_native_layer(
                     "barbs",
                     field.identity,
                     field.images,
                     pending=self._native_pending_camera is not None,
+                    completion_token=token if staged else None,
                 )
                 self._native_pending_selection_urls = selection_urls
-                self._publication_manager.verify_and_adopt(
-                    LayerRole.BARBS, lambda r: True
-                )
             elif self._published != field.generation:
                 for name, url in zip(
                     ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls

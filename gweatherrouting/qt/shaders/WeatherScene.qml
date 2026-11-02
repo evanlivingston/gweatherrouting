@@ -14,11 +14,15 @@ Item {
         objectName: "weatherFill"
         anchors.fill: parent
         visible: root.fillEnabled
+        // Byte-identical slot shaders need separate URLs: Qt can retain an
+        // Uncompiled status for a second effect sharing the cached URL.
+        fragmentShader: Qt.resolvedUrl("weather-fill-front.frag.qsb")
     }
     WeatherFill {
         objectName: "weatherFillBack"
         anchors.fill: parent
         visible: false
+        fragmentShader: Qt.resolvedUrl("weather-fill-back.frag.qsb")
     }
     WeatherBarbs {
         id: barbs

@@ -1037,6 +1037,22 @@ def chart_image_provider(name="chart"):
                 self._images = {str(generation): image}
             return f"image://{name}/{generation}"
 
+        def publish_retained(self, generation, image, visible_generation=None):
+            """Keep only the visible image and its replacement."""
+            with self._lock:
+                self.publishes += 1
+                visible = self._images.get(str(visible_generation))
+                self._images = (
+                    {} if visible is None else {str(visible_generation): visible}
+                )
+                self._images[str(generation)] = image
+            return f"image://{name}/{generation}"
+
+        def retain(self, generation=None):
+            with self._lock:
+                image = self._images.get(str(generation))
+                self._images = {} if image is None else {str(generation): image}
+
         def requestImage(self, identifier, size, requested_size):  # noqa: N802
             with self._lock:
                 self.requests += 1
