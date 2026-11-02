@@ -70,15 +70,24 @@ Item {
     readonly property string batchDiagnostics: {
         let revision = batchRevision
         let details = []
-        let batches = pendingBuffer === 0 ? buffer0 : buffer1
+        let selectedBuffer = pendingBuffer >= 0 ? pendingBuffer : frontBuffer
+        if (selectedBuffer < 0) return "batches=0 []"
+        let batches = selectedBuffer === 0 ? buffer0 : buffer1
         for (var i = 0; i < batches.count; ++i) {
             var delegate = batches.itemAt(i)
             if (!delegate) {
                 details.push(i + ": delegate unavailable")
                 continue
             }
-            details.push(i + ": image=" + delegate.imageStatus
-                         + ", shader=" + delegate.effectStatus
+            let imageStatus = delegate.imageStatus === Image.Null ? "Null"
+                            : delegate.imageStatus === Image.Ready ? "Ready"
+                            : delegate.imageStatus === Image.Loading ? "Loading"
+                            : delegate.imageStatus === Image.Error ? "Error" : "Unknown"
+            let effectStatus = delegate.effectStatus === ShaderEffect.Uncompiled ? "Uncompiled"
+                             : delegate.effectStatus === ShaderEffect.Compiled ? "Compiled"
+                             : delegate.effectStatus === ShaderEffect.Error ? "Error" : "Unknown"
+            details.push(i + ": image=" + imageStatus + "(" + delegate.imageStatus + ")"
+                         + ", shader=" + effectStatus + "(" + delegate.effectStatus + ")"
                          + ", batch=" + delegate.width + "x" + delegate.height
                          + " visible=" + delegate.visible
                          + ", effect=" + delegate.effectWidth + "x" + delegate.effectHeight
@@ -140,6 +149,8 @@ Item {
                 property int segmentCount: modelData.count
                  property int imageStatus: segments.status
                  property int effectStatus: effect.status
+                 onImageStatusChanged: root.batchRevision++
+                 onEffectStatusChanged: root.batchRevision++
                  property real effectWidth: effect.width
                  property real effectHeight: effect.height
                  property bool effectVisible: effect.visible

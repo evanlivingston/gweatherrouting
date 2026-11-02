@@ -28,6 +28,10 @@ def test_all_points_keeps_standalone_viewport_without_changing_the_preference(
 
 def test_all_points_status_is_explicit_not_loading(presenter):
     presenter.canvas._desktop_viewport = True
+    get_setting = presenter.canvas.controller.settings.get
+    presenter.canvas.controller.settings.get = lambda key, default=None: (
+        True if key == "developerMode" else get_setting(key, default)
+    )
     presenter.canvas.controller.settings.gribBarbDensity = "all"
     presenter.canvas.controller.display_forecast = SimpleNamespace(
         status="chosen HRRR", error=""

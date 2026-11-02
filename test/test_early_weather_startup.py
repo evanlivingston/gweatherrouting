@@ -43,6 +43,7 @@ class Owner(QObject):
         self.data = SimpleNamespace(
             changed=self.data_signal.changed, redraw=lambda: self.calls.append("redraw")
         )
+        self.display_forecast = SimpleNamespace(sources=lambda: ())
         self.core = SimpleNamespace(grib_manager=SimpleNamespace(gribs=["forecast"]))
 
     def add(self, value):

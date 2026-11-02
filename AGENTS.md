@@ -63,6 +63,25 @@ we do not prepare upstream contributions or track upstream PRs.
   last recorded results.
 - Summarize validation as counts. Do not paste full output.
 
+## Test quality
+
+- Add a test only for a distinct user-visible behavior, safety invariant, or
+  important regression risk. Do not add one test per method or duplicate
+  coverage already provided at a more meaningful boundary.
+- Prefer tests against stable public behavior. Test private implementation
+  details or call order only when they are themselves a required contract and
+  no stable boundary can cover the risk.
+- Keep fixtures and mocks faithful to production interfaces. Prefer shared,
+  small fixtures over ad hoc doubles that omit required behavior.
+- When a test fails, classify it as a product regression, a stale/invalid test
+  contract, or an environment/setup issue before changing code or expectation.
+  Never weaken an assertion solely to make the suite green.
+- Remove or rewrite a test only after confirming its behavior is obsolete or
+  covered elsewhere; preserve unique safety coverage.
+- In the change summary, state the distinct risk covered by added or removed
+  tests. Keep test output to counts and relevant failures; inspect full logs
+  only when diagnosing a failure.
+
 ## Scope-specific rules
 
 - Renderer, viewport, GPU or rendering-gate work anywhere in the repo: read

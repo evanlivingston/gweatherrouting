@@ -441,6 +441,9 @@ def test_a_stalled_preparation_does_not_block_the_caller(gribs):
                 (),
                 {
                     "settings": type("Settings", (), {"gribArrowOnGround": True})(),
+                    "display_forecast": type(
+                        "DisplayForecast", (), {"sources": lambda self: ()}
+                    )(),
                     "core": type(
                         "Core",
                         (),

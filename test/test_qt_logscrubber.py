@@ -570,6 +570,7 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
         "show_log_library",
         "_track_source_changed",
         "_record",
+        "_toggle_instruments",
     ):
         setattr(window, name, lambda *args: None)
     window._interactive_plots = PreviewWindow._interactive_plots
@@ -656,6 +657,7 @@ def test_source_dropdown_is_the_live_reading_control(transport):
     window.show_log_library = lambda: None
     window._track_source_changed = lambda _index: None
     window._record = lambda _active: None
+    window._toggle_instruments = lambda _active: None
     panel = PreviewWindow._nmea_panel(window)
     try:
         window.source.setCurrentIndex(1)

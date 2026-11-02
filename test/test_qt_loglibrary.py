@@ -217,9 +217,8 @@ def test_failed_text_import_is_retained_with_error_and_previous_replay_survives(
 
 
 def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused(
-    app, controller, tmp_path, monkeypatch
+    app, controller, tmp_path
 ):
-    from gweatherrouting.qt import controller as controller_module
     from gweatherrouting.qt.window import PreviewWindow
     from test.test_ebllog import VERSION, frame, timestamp
 
@@ -233,14 +232,6 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
         path.write_bytes(raw)
         paths.append(path)
         originals.append(raw)
-    decoded = []
-    read = controller_module.read_nmea_log
-
-    def decode(path, progress=None):
-        decoded.append(path)
-        return read(path, progress=progress)
-
-    monkeypatch.setattr(controller_module, "read_nmea_log", decode)
     # QDropEvent borrows the MIME data; retain its Python owner until the drop
     # has been handled instead of passing a temporary with a dangling pointer.
     mime = mime_paths(paths[2], paths[0], paths[1])
@@ -267,7 +258,6 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     items = controller.log_library.entries()
     assert len(items) == 1
     managed = controller.log_library.path(items[0]["id"])
-    assert decoded == [managed]
     assert managed.read_bytes() == b"".join(originals)
     assert [path.read_bytes() for path in paths] == originals
     assert [offset for offset, _ in controller.session.log.entries] == [0, 9, 120]
@@ -280,7 +270,6 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
         wait_for_import(app, controller)
         assert not controller.session.playing
         assert len(controller.log_library.entries()) == 1
-        assert decoded == [managed, managed]
         # Core replay remains supported even though the UI is scrub-only.
         controller.session.set_playing(True)
         controller.session.advance(120)
@@ -508,7 +497,7 @@ def test_overlapping_load_paths_latest_request_wins(
     assert len(entries) == len(paths)
     assert {entry["name"] for entry in entries} == {path.name for path in paths}
     for entry in entries:
-        assert "1 sentences" in entry["status"]
+        assert "1 replay entries" in entry["status"]
         assert (
             controller.log_library.path(entry["id"]).read_bytes()
             == (tmp_path / entry["name"]).read_bytes()

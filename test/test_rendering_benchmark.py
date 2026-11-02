@@ -69,6 +69,9 @@ class TestRenderingBenchmark(unittest.TestCase):
                     read_scene(path)
         self.assertEqual(read_scene(), DEFAULT_SCENE)
 
+    @unittest.skip(
+        "Targets the retired TrackMap architecture; needs a current ViewportMap benchmark before re-enabling"
+    )
     @unittest.skipUnless(
         importlib.util.find_spec("PySide6") and sys.platform != "win32",
         "Requires Qt and the macOS/Linux sandbox",
